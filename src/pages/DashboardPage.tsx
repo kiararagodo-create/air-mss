@@ -1,4 +1,5 @@
-import { Bell, CheckCircle2, ChevronDown, Droplets, Thermometer } from "lucide-react";
+import { useState } from "react";
+import { Bell, CheckCircle2, ChevronDown, Droplets, Thermometer, X } from "lucide-react";
 
 // Lightweight local replacements for ./ui to avoid missing-module errors.
 // Kept minimal — styling inline to match expected usage in this file.
@@ -124,6 +125,10 @@ export interface Thresholds {
 
 type Tone = "success" | "warning" | "high" | "danger" | "neutral";
 
+// Which summary box is active, drives both the left-hand room list filter
+// and the details panel shown above the main grid.
+type SummaryFilter = "all" | "safe" | "warningHigh" | "danger" | null;
+
 interface DashboardPageProps {
   rooms: Room[];
   selectedId: string;
@@ -132,22 +137,48 @@ interface DashboardPageProps {
 }
 
 export default function DashboardPage({ rooms, selectedId, setSelectedId, thresholds }: DashboardPageProps) {
+  const [activeFilter, setActiveFilter] = useState<SummaryFilter>(null);
+
   const selected = rooms.find((r) => r.id === selectedId) || rooms[0];
   const status = getStatus(selected, thresholds);
 
-  const safeCount = rooms.filter((r) => getStatus(r, thresholds).severity === 0).length;
-  const warningCount = rooms.filter((r) => getStatus(r, thresholds).severity === 1).length;
-  const highCount = rooms.filter((r) => getStatus(r, thresholds).severity === 2).length;
-  const dangerCount = rooms.filter((r) => getStatus(r, thresholds).severity === 3).length;
+  const safeRooms = rooms.filter((r) => getStatus(r, thresholds).severity === 0);
+  const warningHighRooms = rooms.filter((r) => {
+    const s = getStatus(r, thresholds).severity;
+    return s === 1 || s === 2;
+  });
+  const dangerRooms = rooms.filter((r) => getStatus(r, thresholds).severity === 3);
 
-  const summaryCards: { label: string; value: number; color: string }[] = [
-    { label: "ROOMS MONITORED", value: rooms.length, color: "#1f2937" },
-    { label: "SAFE ROOMS", value: safeCount, color: "#0d9488" },
-    { label: "WARNING / HIGH", value: warningCount + highCount, color: "#d97706" },
-    { label: "DANGER ROOMS", value: dangerCount, color: "#dc2626" },
+  const summaryCards: { key: SummaryFilter; label: string; value: number; color: string }[] = [
+    { key: "all", label: "ROOMS MONITORED", value: rooms.length, color: "#1f2937" },
+    { key: "safe", label: "SAFE ROOMS", value: safeRooms.length, color: "#0d9488" },
+    { key: "warningHigh", label: "WARNING / HIGH", value: warningHighRooms.length, color: "#d97706" },
+    { key: "danger", label: "DANGER ROOMS", value: dangerRooms.length, color: "#dc2626" },
   ];
 
+  const filterRoomMap: Record<Exclude<SummaryFilter, null>, Room[]> = {
+    all: rooms,
+    safe: safeRooms,
+    warningHigh: warningHighRooms,
+    danger: dangerRooms,
+  };
+
+  const filterTitles: Record<Exclude<SummaryFilter, null>, string> = {
+    all: "All Monitored Rooms",
+    safe: "Safe Rooms",
+    warningHigh: "Warning / High Rooms",
+    danger: "Danger Rooms",
+  };
+
+  // Rooms shown in the left-hand list — filtered when a summary box is active.
+  const listRooms = activeFilter ? filterRoomMap[activeFilter] : rooms;
+
+  const handleSummaryClick = (key: SummaryFilter) => {
+    setActiveFilter((prev) => (prev === key ? null : key));
+  };
+
   const co2Pct = clamp((selected.co2 / thresholds.co2.danger) * 100, 0, 100);
+  const lpgPct = selected.lpg != null ? clamp((selected.lpg / thresholds.lpg.danger) * 100, 0, 100) : 0;
   const action = actionMessage(selected, thresholds);
 
   const co2Guide: [string, string, Tone][] = [
@@ -173,6 +204,18 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
           gap: 14px;
           margin-bottom: 20px;
         }
+        .air-summary-card {
+          background: #fff;
+          border: 1px solid #eef1f4;
+          border-radius: 12px;
+          padding: 14px 16px;
+          cursor: pointer;
+          text-align: left;
+          transition: box-shadow 0.15s ease, border-color 0.15s ease;
+        }
+        .air-summary-card:hover {
+          box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+        }
         .air-dashboard-grid {
           display: grid;
           grid-template-columns: 280px 1fr 250px;
@@ -184,6 +227,12 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
           grid-template-columns: 1fr 1fr;
           gap: 10px;
         }
+        .air-gauge-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+          margin: 16px 0;
+        }
         @media (max-width: 640px) {
           .air-summary-grid {
             grid-template-columns: repeat(2, 1fr);
@@ -191,6 +240,11 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
         }
         @media (max-width: 1100px) {
           .air-dashboard-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        @media (max-width: 480px) {
+          .air-gauge-grid {
             grid-template-columns: 1fr;
           }
         }
@@ -208,32 +262,103 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
       </p>
 
       <div className="air-summary-grid">
-        {summaryCards.map((c, i) => (
-          <div
-            key={i}
-            style={{
-              background: "#fff",
-              border: "1px solid #eef1f4",
-              borderRadius: 12,
-              padding: "14px 16px",
-            }}
-          >
-            <div
+        {summaryCards.map((c) => {
+          const isActive = activeFilter === c.key;
+          return (
+            <button
+              key={c.label}
+              type="button"
+              className="air-summary-card"
+              onClick={() => handleSummaryClick(c.key)}
               style={{
-                fontSize: 10.5,
-                fontWeight: 700,
-                color: "#94a3b8",
-                letterSpacing: 0.5,
+                border: isActive ? `1px solid ${c.color}` : "1px solid #eef1f4",
+                boxShadow: isActive ? `0 0 0 3px ${c.color}1a` : "none",
               }}
             >
-              {c.label}
-            </div>
-            <div style={{ fontSize: 26, fontWeight: 800, color: c.color, marginTop: 4 }}>
-              {c.value}
-            </div>
-          </div>
-        ))}
+              <div
+                style={{
+                  fontSize: 10.5,
+                  fontWeight: 700,
+                  color: "#94a3b8",
+                  letterSpacing: 0.5,
+                }}
+              >
+                {c.label}
+              </div>
+              <div style={{ fontSize: 26, fontWeight: 800, color: c.color, marginTop: 4 }}>
+                {c.value}
+              </div>
+            </button>
+          );
+        })}
       </div>
+
+      {activeFilter && (
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #eef1f4",
+            borderRadius: 12,
+            padding: 16,
+            marginBottom: 20,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <span style={{ fontWeight: 800, fontSize: 15, color: "#0f172a" }}>
+              {filterTitles[activeFilter]} ({filterRoomMap[activeFilter].length})
+            </span>
+            <button
+              type="button"
+              onClick={() => setActiveFilter(null)}
+              style={{ border: "none", background: "none", cursor: "pointer", display: "flex" }}
+            >
+              <X size={16} color="#94a3b8" />
+            </button>
+          </div>
+
+          {filterRoomMap[activeFilter].length === 0 ? (
+            <div style={{ fontSize: 13, color: "#94a3b8" }}>No rooms in this category right now.</div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+              {filterRoomMap[activeFilter].map((r) => {
+                const st = getStatus(r, thresholds);
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => setSelectedId(r.id)}
+                    style={{
+                      textAlign: "left",
+                      border: r.id === selected.id ? "1px solid #0d9488" : "1px solid #eef1f4",
+                      background: r.id === selected.id ? "#f0faf7" : "#f8fafc",
+                      borderRadius: 10,
+                      padding: 10,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", letterSpacing: 0.4 }}>
+                        {r.floor.toUpperCase()}
+                      </span>
+                      <Badge label={st.label} tone={st.tone} />
+                    </div>
+                    <div style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a", marginTop: 2 }}>
+                      {r.name}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#94a3b8" }}>ID: {r.id}</div>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 12 }}>
+                      <span style={{ color: "#334155" }}>{Math.round(r.co2)} CO2 ppm</span>
+                      <span style={{ color: "#334155" }}>
+                        {r.lpg != null ? `${Math.round(r.lpg)} LPG ppm` : "N/A"}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="air-dashboard-grid">
         <div
@@ -257,65 +382,69 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
           >
             <span>MONITORED ROOMS</span>
             <span style={{ color: "#94a3b8", fontWeight: 500 }}>
-              {rooms.length} Installed
+              {listRooms.length} {activeFilter ? "Shown" : "Installed"}
             </span>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {rooms.map((r) => {
-              const st = getStatus(r, thresholds);
-              const active = r.id === selected.id;
-              return (
-                <button
-                  key={r.id}
-                  onClick={() => setSelectedId(r.id)}
-                  style={{
-                    textAlign: "left",
-                    border: active ? "1px solid #0d9488" : "1px solid #eef1f4",
-                    background: active ? "#f0faf7" : "#fff",
-                    borderRadius: 10,
-                    padding: 10,
-                    cursor: "pointer",
-                  }}
-                >
-                  <div
+            {listRooms.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: "#94a3b8" }}>No rooms match this filter.</div>
+            ) : (
+              listRooms.map((r) => {
+                const st = getStatus(r, thresholds);
+                const active = r.id === selected.id;
+                return (
+                  <button
+                    key={r.id}
+                    onClick={() => setSelectedId(r.id)}
                     style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "flex-start",
+                      textAlign: "left",
+                      border: active ? "1px solid #0d9488" : "1px solid #eef1f4",
+                      background: active ? "#f0faf7" : "#fff",
+                      borderRadius: 10,
+                      padding: 10,
+                      cursor: "pointer",
                     }}
                   >
-                    <span
+                    <div
                       style={{
-                        fontSize: 10,
-                        fontWeight: 700,
-                        color: "#94a3b8",
-                        letterSpacing: 0.4,
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
                       }}
                     >
-                      {r.floor.toUpperCase()}
-                    </span>
-                    <Badge label={st.label} tone={st.tone} />
-                  </div>
-                  <div style={{ fontWeight: 700, fontSize: 14, color: "#0f172a", marginTop: 2 }}>
-                    {r.name}
-                  </div>
-                  <div style={{ fontSize: 11, color: "#94a3b8" }}>ID: {r.id}</div>
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      marginTop: 6,
-                      fontSize: 12,
-                    }}
-                  >
-                    <span style={{ color: "#334155" }}>{Math.round(r.co2)} CO2 ppm</span>
-                    <span style={{ color: "#334155" }}>
-                      {r.lpg != null ? `${Math.round(r.lpg)} LPG ppm` : "N/A"}
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          color: "#94a3b8",
+                          letterSpacing: 0.4,
+                        }}
+                      >
+                        {r.floor.toUpperCase()}
+                      </span>
+                      <Badge label={st.label} tone={st.tone} />
+                    </div>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: "#0f172a", marginTop: 2 }}>
+                      {r.name}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#94a3b8" }}>ID: {r.id}</div>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        marginTop: 6,
+                        fontSize: 12,
+                      }}
+                    >
+                      <span style={{ color: "#334155" }}>{Math.round(r.co2)} CO2 ppm</span>
+                      <span style={{ color: "#334155" }}>
+                        {r.lpg != null ? `${Math.round(r.lpg)} LPG ppm` : "N/A"}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -353,75 +482,86 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
             />
           </div>
 
-          <div style={{ textAlign: "center", margin: "20px 0 8px" }}>
-            <div
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                color: "#94a3b8",
-                letterSpacing: 0.5,
-              }}
-            >
-              CO2 READING
-            </div>
-            <div style={{ fontSize: 46, fontWeight: 800, color: badgeStyles(status.tone).text }}>
-              {Math.round(selected.co2)}
-              <span style={{ fontSize: 18, color: "#64748b", fontWeight: 600 }}> ppm</span>
-            </div>
-          </div>
-
-          <div
-            style={{
-              background: "#f1f5f9",
-              borderRadius: 999,
-              height: 8,
-              margin: "12px 0 4px",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                width: `${co2Pct}%`,
-                height: "100%",
-                background: badgeStyles(status.tone).text,
-                borderRadius: 999,
-                transition: "width 0.4s ease",
-              }}
-            />
-          </div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: 11,
-              color: "#94a3b8",
-              marginBottom: 16,
-            }}
-          >
-            <span>SAFE (0)</span>
-            <span>DANGER ({thresholds.co2.danger})</span>
-          </div>
-
-          <div className="air-detail-subgrid" style={{ marginBottom: 10 }}>
-            <div style={{ background: "#f8fafc", borderRadius: 10, padding: 12 }}>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8" }}>
-                LPG CONCENTRATION
+          <div className="air-gauge-grid">
+            {/* CO2 gauge */}
+            <div>
+              <div style={{ textAlign: "center", marginBottom: 6 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", letterSpacing: 0.5 }}>
+                  CO2 &middot; {selected.co2Sensor}
+                </div>
+                <div style={{ fontSize: 34, fontWeight: 800, color: badgeStyles(status.tone).text }}>
+                  {Math.round(selected.co2)}
+                  <span style={{ fontSize: 15, color: "#64748b", fontWeight: 600 }}> ppm</span>
+                </div>
               </div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: "#0f172a", marginTop: 4 }}>
-                {selected.lpg != null ? `${Math.round(selected.lpg)} ppm` : "N/A"}
+              <div
+                style={{
+                  background: "#f1f5f9",
+                  borderRadius: 999,
+                  height: 8,
+                  margin: "10px 0 4px",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${co2Pct}%`,
+                    height: "100%",
+                    background: badgeStyles(status.tone).text,
+                    borderRadius: 999,
+                    transition: "width 0.4s ease",
+                  }}
+                />
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "#94a3b8" }}>
+                <span>SAFE (0)</span>
+                <span>DANGER ({thresholds.co2.danger})</span>
+              </div>
+            </div>
+
+            {/* LPG gauge */}
+            <div>
+              <div style={{ textAlign: "center", marginBottom: 6 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", letterSpacing: 0.5 }}>
+                  LPG &middot; {selected.gasSensor ?? "No sensor"}
+                </div>
+                <div
+                  style={{
+                    fontSize: 34,
+                    fontWeight: 800,
+                    color: selected.lpg != null ? badgeStyles(getStatus(selected, thresholds).tone).text : "#94a3b8",
+                  }}
+                >
+                  {selected.lpg != null ? Math.round(selected.lpg) : "N/A"}
+                  {selected.lpg != null && <span style={{ fontSize: 15, color: "#64748b", fontWeight: 600 }}> ppm</span>}
+                </div>
+              </div>
+              <div
+                style={{
+                  background: "#f1f5f9",
+                  borderRadius: 999,
+                  height: 8,
+                  margin: "10px 0 4px",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${lpgPct}%`,
+                    height: "100%",
+                    background: selected.lpg != null ? badgeStyles(status.tone).text : "#e2e8f0",
+                    borderRadius: 999,
+                    transition: "width 0.4s ease",
+                  }}
+                />
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "#94a3b8" }}>
+                <span>SAFE (0)</span>
+                <span>DANGER ({thresholds.lpg.danger})</span>
               </div>
               {selected.lpg == null && (
-                <div style={{ fontSize: 10.5, color: "#94a3b8" }}>No gas sensor installed</div>
+                <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 4 }}>No gas sensor installed</div>
               )}
-            </div>
-            <div style={{ background: "#f8fafc", borderRadius: 10, padding: 12 }}>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8" }}>
-                INSTALLED MODULES
-              </div>
-              <div style={{ fontSize: 14, fontWeight: 800, color: "#0f172a", marginTop: 4 }}>
-                {selected.co2Sensor}
-                {selected.gasSensor ? ` + ${selected.gasSensor}` : " (CO2 only)"}
-              </div>
             </div>
           </div>
 

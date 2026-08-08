@@ -12,6 +12,43 @@ type User = {
 
 type RoomForm = Partial<Room> & { submitLabel?: string };
 
+// Edit these lists to add/remove dropdown options
+const FLOOR_OPTIONS = ["Ground Floor", "2nd Floor", "3rd Floor", "4th Floor", "5th Floor"];
+
+const CO2_SENSOR_OPTIONS = [
+  "MH-Z19",
+  "MH-Z19B",
+  "MH-Z19C",
+  "SCD30",
+  "SCD40",
+  "SCD41",
+  "CCS811",
+  "K30",
+  "T6713",
+];
+
+const GAS_SENSOR_OPTIONS = [
+  "MQ-2",
+  "MQ-4",
+  "MQ-5",
+  "MQ-6",
+  "MQ-7",
+  "MQ-9",
+  "MQ-135",
+  "None (CO2 monitoring only)",
+];
+
+const selectStyle = {
+  border: "1px solid #e2e8f0",
+  borderRadius: 8,
+  padding: "8px 10px",
+  fontSize: 13,
+  color: "#0f172a",
+  width: "100%",
+  boxSizing: "border-box" as const,
+  background: "#fff",
+};
+
 function AddDeviceModal({
   onClose,
   onSubmit,
@@ -22,13 +59,13 @@ function AddDeviceModal({
   const [form, setForm] = useState<any>({
     id: "",
     name: "",
-    floor: "",
+    floor: FLOOR_OPTIONS[0],
     length: "6",
     width: "4",
     height: "3",
     occupancy: 1,
-    co2Sensor: "MH-Z19",
-    gasSensor: "MQ-2",
+    co2Sensor: CO2_SENSOR_OPTIONS[0],
+    gasSensor: GAS_SENSOR_OPTIONS[0],
     co2: 400,
     lpg: 0,
     temp: 25,
@@ -87,11 +124,9 @@ function AddDeviceModal({
           {[
             { label: "Device ID", field: "id", type: "text" },
             { label: "Name", field: "name", type: "text" },
-            { label: "Floor", field: "floor", type: "text" },
             { label: "Length (m)", field: "length", type: "number" },
             { label: "Width (m)", field: "width", type: "number" },
             { label: "Height (m)", field: "height", type: "number" },
-            { label: "Occupancy", field: "occupancy", type: "number" },
           ].map(({ label, field, type }) => (
             <label key={field} style={{ display: "flex", flexDirection: "column", fontSize: 12, color: "#334155" }}>
               <span style={{ marginBottom: 6 }}>{label}</span>
@@ -111,21 +146,38 @@ function AddDeviceModal({
               />
             </label>
           ))}
+
+          <label style={{ display: "flex", flexDirection: "column", fontSize: 12, color: "#334155" }}>
+            <span style={{ marginBottom: 6 }}>Floor</span>
+            <select value={form.floor} onChange={(event) => updateField("floor", event.target.value)} style={selectStyle}>
+              {FLOOR_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <label style={{ display: "flex", flexDirection: "column", fontSize: 12, color: "#334155" }}>
             <span style={{ marginBottom: 6 }}>CO2 Sensor</span>
-            <input
-              value={form.co2Sensor}
-              onChange={(event) => updateField("co2Sensor", event.target.value)}
-              style={{ border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 10px", fontSize: 13, color: "#0f172a", width: "100%", boxSizing: "border-box" }}
-            />
+            <select value={form.co2Sensor} onChange={(event) => updateField("co2Sensor", event.target.value)} style={selectStyle}>
+              {CO2_SENSOR_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
           </label>
+
           <label style={{ display: "flex", flexDirection: "column", fontSize: 12, color: "#334155" }}>
             <span style={{ marginBottom: 6 }}>Gas Sensor</span>
-            <input
-              value={form.gasSensor}
-              onChange={(event) => updateField("gasSensor", event.target.value)}
-              style={{ border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 10px", fontSize: 13, color: "#0f172a", width: "100%", boxSizing: "border-box" }}
-            />
+            <select value={form.gasSensor} onChange={(event) => updateField("gasSensor", event.target.value)} style={selectStyle}>
+              {GAS_SENSOR_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
           </label>
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18, flexWrap: "wrap" }}>

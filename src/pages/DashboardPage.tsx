@@ -1,0 +1,609 @@
+import { Bell, CheckCircle2, ChevronDown, Droplets, Thermometer } from "lucide-react";
+
+// Lightweight local replacements for ./ui to avoid missing-module errors.
+// Kept minimal — styling inline to match expected usage in this file.
+const badgeStyles: ((tone: Tone) => { text: string }) & { base: React.CSSProperties } =
+  Object.assign(
+    (tone: Tone) => ({ text: getToneColor(tone) }),
+    {
+      base: {
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "4px 8px",
+        borderRadius: 8,
+        fontWeight: 700,
+        fontSize: 12,
+      } as React.CSSProperties,
+    }
+  );
+
+const toneColors: Record<Tone, string> = {
+  success: "#10b981",
+  warning: "#f59e0b",
+  high: "#d97706",
+  danger: "#ef4444",
+  neutral: "#94a3b8",
+};
+
+function getToneColor(tone: Tone): string {
+  return toneColors[tone];
+}
+
+function ToneDot({ tone }: { tone: Tone }) {
+  const map: Record<Tone, string> = {
+    success: "#10b981",
+    warning: "#f59e0b",
+    high: "#d97706",
+    danger: "#ef4444",
+    neutral: "#94a3b8",
+  };
+  return (
+    <span style={{ width: 10, height: 10, borderRadius: 6, background: map[tone] }} />
+  );
+}
+
+function Badge({ label, tone }: { label: string; tone: Tone }) {
+  return (
+    <span style={{ ...badgeStyles.base, background: "#fff", border: "1px solid #eef1f4" }}>
+      <ToneDot tone={tone} />
+      <span style={{ color: "#334155" }}>{label}</span>
+    </span>
+  );
+}
+
+// Minimal local replacements for missing ./data module to avoid build errors.
+function clamp(v: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, v));
+}
+
+function getStatus(room: Room, thresholds: Thresholds) {
+  const co2 = room.co2;
+  const lpg = room.lpg ?? 0;
+  const co2Severity = co2 > thresholds.co2.danger ? 3 : co2 > thresholds.co2.high ? 2 : co2 > thresholds.co2.warning ? 1 : 0;
+  const lpgSeverity = lpg > thresholds.lpg.danger ? 3 : lpg > thresholds.lpg.high ? 2 : lpg > thresholds.lpg.warning ? 1 : 0;
+  const severity = Math.max(co2Severity, lpgSeverity);
+  const tone: Tone[] = ["success", "warning", "high", "danger"];
+  const labels = ["OK", "Monitor", "Investigate", "DANGER"];
+  return { severity, tone: tone[severity] as Tone, label: labels[severity] };
+}
+
+type ActionPlan = { title: string; body: string };
+
+function actionMessage(room: Room, thresholds: Thresholds): ActionPlan {
+  const status = getStatus(room, thresholds).severity;
+  if (status === 0)
+    return {
+      title: "No action needed",
+      body: "CO2 and LPG levels are within safe limits. Continue monitoring the area.",
+    };
+  if (status === 1)
+    return {
+      title: "Monitor conditions",
+      body: "Gas levels are elevated; observe the area closely and reduce exposure if possible.",
+    };
+  if (status === 2)
+    return {
+      title: "Investigate immediately",
+      body: "High concentrations detected. Inspect the area immediately and address any sources.",
+    };
+  return {
+    title: "Evacuate area and ventilate",
+    body: "Dangerous gas levels detected. Evacuate immediately and ventilate the area before re-entry.",
+  };
+}
+
+function volumeOf(_sensor: Room | string) {
+  // placeholder: original function likely maps a Room or sensor ID to a room volume in m3.
+  // If passed a Room, we could derive volume from occupancy as a fallback; keep simple for now.
+  if (typeof _sensor === "string") return 0;
+  return 0;
+}
+
+// Local type definitions to avoid depending on AdminDashboard module.
+// Keep fields minimal to match usage in this file.
+type SensorName = string;
+export interface Room {
+  id: string;
+  name: string;
+  floor: string;
+  co2: number;
+  lpg?: number | null;
+  online: boolean;
+  co2Sensor: SensorName;
+  gasSensor?: SensorName | null;
+  temp: number;
+  humidity: number;
+  occupancy: number;
+}
+
+export interface Thresholds {
+  co2: { warning: number; high: number; danger: number };
+  lpg: { warning: number; high: number; danger: number };
+}
+
+type Tone = "success" | "warning" | "high" | "danger" | "neutral";
+
+interface DashboardPageProps {
+  rooms: Room[];
+  selectedId: string;
+  setSelectedId: (id: string) => void;
+  thresholds: Thresholds;
+}
+
+export default function DashboardPage({ rooms, selectedId, setSelectedId, thresholds }: DashboardPageProps) {
+  const selected = rooms.find((r) => r.id === selectedId) || rooms[0];
+  const status = getStatus(selected, thresholds);
+
+  const safeCount = rooms.filter((r) => getStatus(r, thresholds).severity === 0).length;
+  const warningCount = rooms.filter((r) => getStatus(r, thresholds).severity === 1).length;
+  const highCount = rooms.filter((r) => getStatus(r, thresholds).severity === 2).length;
+  const dangerCount = rooms.filter((r) => getStatus(r, thresholds).severity === 3).length;
+
+  const summaryCards: { label: string; value: number; color: string }[] = [
+    { label: "ROOMS MONITORED", value: rooms.length, color: "#1f2937" },
+    { label: "SAFE ROOMS", value: safeCount, color: "#0d9488" },
+    { label: "WARNING / HIGH", value: warningCount + highCount, color: "#d97706" },
+    { label: "DANGER ROOMS", value: dangerCount, color: "#dc2626" },
+  ];
+
+  const co2Pct = clamp((selected.co2 / thresholds.co2.danger) * 100, 0, 100);
+  const action = actionMessage(selected, thresholds);
+
+  const co2Guide: [string, string, Tone][] = [
+    [`< ${thresholds.co2.warning} ppm`, "Safe / Good", "success"],
+    [`${thresholds.co2.warning} - ${thresholds.co2.high} ppm`, "Warning", "warning"],
+    [`${thresholds.co2.high} - ${thresholds.co2.danger} ppm`, "High Gas", "high"],
+    [`> ${thresholds.co2.danger} ppm`, "Danger", "danger"],
+  ];
+
+  const lpgGuide: [string, string, Tone][] = [
+    [`< ${thresholds.lpg.warning} ppm`, "Safe", "success"],
+    [`${thresholds.lpg.warning} - ${thresholds.lpg.high} ppm`, "Low Leak", "warning"],
+    [`${thresholds.lpg.high} - ${thresholds.lpg.danger} ppm`, "Moderate Leak", "high"],
+    [`> ${thresholds.lpg.danger} ppm`, "Dangerous", "danger"],
+  ];
+
+  return (
+    <div>
+      <style>{`
+        .air-summary-grid {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 14px;
+          margin-bottom: 20px;
+        }
+        .air-dashboard-grid {
+          display: grid;
+          grid-template-columns: 280px 1fr 250px;
+          gap: 16px;
+          align-items: start;
+        }
+        .air-detail-subgrid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+        }
+        @media (max-width: 640px) {
+          .air-summary-grid {
+            grid-template-columns: repeat(2, 1fr);
+          }
+        }
+        @media (max-width: 1100px) {
+          .air-dashboard-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        @media (max-width: 380px) {
+          .air-detail-subgrid {
+            grid-template-columns: 1fr;
+          }
+        }
+      `}</style>
+      <h1 style={{ fontSize: 22, fontWeight: 800, color: "#0f172a", margin: 0 }}>
+        IoT Environmental Safety Dashboard
+      </h1>
+      <p style={{ color: "#64748b", fontSize: 13.5, margin: "4px 0 20px" }}>
+        Real-time CO2 & LPG telemetry across Asian College premises
+      </p>
+
+      <div className="air-summary-grid">
+        {summaryCards.map((c, i) => (
+          <div
+            key={i}
+            style={{
+              background: "#fff",
+              border: "1px solid #eef1f4",
+              borderRadius: 12,
+              padding: "14px 16px",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10.5,
+                fontWeight: 700,
+                color: "#94a3b8",
+                letterSpacing: 0.5,
+              }}
+            >
+              {c.label}
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 800, color: c.color, marginTop: 4 }}>
+              {c.value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="air-dashboard-grid">
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #eef1f4",
+            borderRadius: 12,
+            padding: 14,
+            minWidth: 0,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              fontSize: 13,
+              fontWeight: 700,
+              color: "#0f172a",
+              marginBottom: 10,
+            }}
+          >
+            <span>MONITORED ROOMS</span>
+            <span style={{ color: "#94a3b8", fontWeight: 500 }}>
+              {rooms.length} Installed
+            </span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {rooms.map((r) => {
+              const st = getStatus(r, thresholds);
+              const active = r.id === selected.id;
+              return (
+                <button
+                  key={r.id}
+                  onClick={() => setSelectedId(r.id)}
+                  style={{
+                    textAlign: "left",
+                    border: active ? "1px solid #0d9488" : "1px solid #eef1f4",
+                    background: active ? "#f0faf7" : "#fff",
+                    borderRadius: 10,
+                    padding: 10,
+                    cursor: "pointer",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "flex-start",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: "#94a3b8",
+                        letterSpacing: 0.4,
+                      }}
+                    >
+                      {r.floor.toUpperCase()}
+                    </span>
+                    <Badge label={st.label} tone={st.tone} />
+                  </div>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: "#0f172a", marginTop: 2 }}>
+                    {r.name}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#94a3b8" }}>ID: {r.id}</div>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginTop: 6,
+                      fontSize: 12,
+                    }}
+                  >
+                    <span style={{ color: "#334155" }}>{Math.round(r.co2)} CO2 ppm</span>
+                    <span style={{ color: "#334155" }}>
+                      {r.lpg != null ? `${Math.round(r.lpg)} LPG ppm` : "N/A"}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #eef1f4",
+            borderRadius: 12,
+            padding: 18,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "flex-start",
+            }}
+          >
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontWeight: 800, fontSize: 16, color: "#0f172a" }}>
+                  {selected.name}
+                </span>
+                <ChevronDown size={16} color="#94a3b8" />
+                <span style={{ fontSize: 12, color: "#94a3b8" }}>{selected.floor}</span>
+              </div>
+              <div style={{ fontSize: 11, color: "#94a3b8" }}>
+                ID: {selected.id} &middot; {volumeOf(selected)} m3 &middot; {selected.occupancy}{" "}
+                occupants
+              </div>
+            </div>
+            <Badge
+              label={selected.online ? "ONLINE" : "OFFLINE"}
+              tone={selected.online ? "success" : "neutral"}
+            />
+          </div>
+
+          <div style={{ textAlign: "center", margin: "20px 0 8px" }}>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: "#94a3b8",
+                letterSpacing: 0.5,
+              }}
+            >
+              CO2 READING
+            </div>
+            <div style={{ fontSize: 46, fontWeight: 800, color: badgeStyles(status.tone).text }}>
+              {Math.round(selected.co2)}
+              <span style={{ fontSize: 18, color: "#64748b", fontWeight: 600 }}> ppm</span>
+            </div>
+          </div>
+
+          <div
+            style={{
+              background: "#f1f5f9",
+              borderRadius: 999,
+              height: 8,
+              margin: "12px 0 4px",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                width: `${co2Pct}%`,
+                height: "100%",
+                background: badgeStyles(status.tone).text,
+                borderRadius: 999,
+                transition: "width 0.4s ease",
+              }}
+            />
+          </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              fontSize: 11,
+              color: "#94a3b8",
+              marginBottom: 16,
+            }}
+          >
+            <span>SAFE (0)</span>
+            <span>DANGER ({thresholds.co2.danger})</span>
+          </div>
+
+          <div className="air-detail-subgrid" style={{ marginBottom: 10 }}>
+            <div style={{ background: "#f8fafc", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8" }}>
+                LPG CONCENTRATION
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#0f172a", marginTop: 4 }}>
+                {selected.lpg != null ? `${Math.round(selected.lpg)} ppm` : "N/A"}
+              </div>
+              {selected.lpg == null && (
+                <div style={{ fontSize: 10.5, color: "#94a3b8" }}>No gas sensor installed</div>
+              )}
+            </div>
+            <div style={{ background: "#f8fafc", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8" }}>
+                INSTALLED MODULES
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: "#0f172a", marginTop: 4 }}>
+                {selected.co2Sensor}
+                {selected.gasSensor ? ` + ${selected.gasSensor}` : " (CO2 only)"}
+              </div>
+            </div>
+          </div>
+
+          <div className="air-detail-subgrid">
+            <div
+              style={{
+                background: "#f8fafc",
+                borderRadius: 10,
+                padding: 12,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <Thermometer size={16} color="#0d9488" />
+              <div>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8" }}>TEMPERATURE</div>
+                <div style={{ fontSize: 15, fontWeight: 800, color: "#0f172a" }}>
+                  {selected.temp.toFixed(1)} &deg;C
+                </div>
+              </div>
+            </div>
+            <div
+              style={{
+                background: "#f8fafc",
+                borderRadius: 10,
+                padding: 12,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <Droplets size={16} color="#0d9488" />
+              <div>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8" }}>HUMIDITY</div>
+                <div style={{ fontSize: 15, fontWeight: 800, color: "#0f172a" }}>
+                  {Math.round(selected.humidity)}%
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div
+            style={{
+              background: "#0f172a",
+              borderRadius: 12,
+              padding: 16,
+              color: "#fff",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: 0.5,
+                color: "#cbd5e1",
+                marginBottom: 10,
+              }}
+            >
+              <Bell size={13} /> ACTION PLAN
+            </div>
+            <div
+              style={{
+                background: "rgba(255,255,255,0.06)",
+                borderRadius: 10,
+                padding: 12,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontWeight: 700,
+                  fontSize: 13,
+                  color:
+                    status.tone === "success"
+                      ? "#5DCAA5"
+                      : status.tone === "warning"
+                      ? "#FAC775"
+                      : status.tone === "high"
+                      ? "#F0997B"
+                      : "#F09595",
+                  marginBottom: 6,
+                }}
+              >
+                <CheckCircle2 size={14} /> {action.title.toUpperCase()}
+              </div>
+              <div style={{ fontSize: 12, color: "#cbd5e1", lineHeight: 1.5 }}>
+                {action.body}
+              </div>
+            </div>
+          </div>
+
+          <div
+            style={{
+              background: "#fff",
+              border: "1px solid #eef1f4",
+              borderRadius: 12,
+              padding: 16,
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 10 }}>
+              CO2 REFERENCE GUIDE
+            </div>
+            {co2Guide.map(([range, label, tone]) => (
+              <div
+                key={range}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  fontSize: 12.5,
+                  padding: "5px 0",
+                }}
+              >
+                <span style={{ color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
+                  <ToneDot tone={tone} /> {range}
+                </span>
+                <span style={{ color: badgeStyles(tone).text, fontWeight: 700 }}>{label}</span>
+              </div>
+            ))}
+            <div
+              style={{
+                fontSize: 10.5,
+                color: "#94a3b8",
+                marginTop: 6,
+                borderTop: "1px solid #f1f5f9",
+                paddingTop: 6,
+              }}
+            >
+              &gt;5000 ppm approaches the OSHA occupational exposure limit - immediate evacuation.
+            </div>
+          </div>
+
+          <div
+            style={{
+              background: "#fff",
+              border: "1px solid #eef1f4",
+              borderRadius: 12,
+              padding: 16,
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 10 }}>
+              LPG REFERENCE GUIDE
+            </div>
+            {lpgGuide.map(([range, label, tone]) => (
+              <div
+                key={range}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  fontSize: 12.5,
+                  padding: "5px 0",
+                }}
+              >
+                <span style={{ color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
+                  <ToneDot tone={tone} /> {range}
+                </span>
+                <span style={{ color: badgeStyles(tone).text, fontWeight: 700 }}>{label}</span>
+              </div>
+            ))}
+            <div
+              style={{
+                fontSize: 10.5,
+                color: "#94a3b8",
+                marginTop: 6,
+                borderTop: "1px solid #f1f5f9",
+                paddingTop: 6,
+              }}
+            >
+              Lower explosive limit (LEL) is roughly 21,000 ppm (~2.1% by volume) - extreme danger.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

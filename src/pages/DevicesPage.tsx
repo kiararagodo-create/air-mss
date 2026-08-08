@@ -13,7 +13,7 @@ type User = {
 type RoomForm = Partial<Room> & { submitLabel?: string };
 
 // Edit these lists to add/remove dropdown options
-const FLOOR_OPTIONS = ["Ground Floor", "2nd Floor", "3rd Floor", "4th Floor", "5th Floor"];
+const FLOOR_OPTIONS = ["Ground Floor", "2nd Floor", "3rd Floor",];
 
 const CO2_SENSOR_OPTIONS = [
   "MH-Z19",

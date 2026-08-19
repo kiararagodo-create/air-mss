@@ -1,6 +1,6 @@
 import { Download } from "lucide-react";
 import { Badge } from "../../ui";
-import { Room, Thresholds, getStatus } from "../../data/Data";
+import { Room, Thresholds, getStatus } from "../../data/data";
 
 interface ReportsPageProps {
   rooms: Room[];
@@ -28,7 +28,7 @@ function exportCSV(rooms: Room[], thresholds: Thresholds) {
     return [
       `${r.name} / ${r.floor}`,
       r.id,
-      `${Math.round(r.co2)} ppm`,
+      r.co2 != null ? `${Math.round(r.co2)} ppm` : "N/A",
       r.alertCount.toString(),
       r.lpg != null ? `${Math.round(r.lpg)} ppm` : "N/A (CO2 only)",
       `${thresholds.co2.danger} ppm`,
@@ -198,7 +198,7 @@ export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
                       <div style={{ fontSize: 11, color: "#94a3b8" }}>{r.floor}</div>
                     </td>
                     <td style={{ padding: "10px 6px", color: "#475569" }}>{r.id}</td>
-                    <td style={{ padding: "10px 6px", fontWeight: 700 }}>{Math.round(r.co2)} ppm</td>
+                    <td style={{ padding: "10px 6px", fontWeight: 700 }}>{r.co2 != null ? `${Math.round(r.co2)} ppm` : "N/A"}</td>
                     <td style={{ padding: "10px 6px" }}>
                       <span
                         style={{

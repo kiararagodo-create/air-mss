@@ -24,11 +24,14 @@ export interface Room {
   floor: string;
   co2Sensor: string;
   gasSensor: string | null;
+  // Maps this room to a physical ESP32's DEVICE_ID for live Supabase data.
+  // Undefined for rooms with no live sensor yet (still using simulated data).
+  deviceId?: string;
   length: number;
   width: number;
   height: number;
   occupancy: number;
-  co2: number;
+  co2: number | null;
   lpg: number | null;
   temp: number;
   humidity: number;
@@ -164,7 +167,7 @@ export function exportCSV(rooms: Room[], thresholds: Thresholds): void {
       r.name,
       r.floor,
       r.id,
-      Math.round(r.co2),
+      r.co2 != null ? Math.round(r.co2) : "N/A",
       r.lpg != null ? Math.round(r.lpg) : "N/A",
       r.temp.toFixed(1),
       Math.round(r.humidity),
@@ -228,7 +231,7 @@ export const INITIAL_ROOMS: Room[] = [
     lpg: null,
     temp: 27.5,
     humidity: 55,
-    online: true,
+    online: false,
     alertCount: 0,
     installedAt: "2024-08-15",
   },
@@ -238,6 +241,9 @@ export const INITIAL_ROOMS: Room[] = [
     floor: "3rd Floor",
     co2Sensor: "MH-Z19C",
     gasSensor: "MQ-6",
+    // Matches this room's own id, which is also the DEVICE_ID your live
+    // ESP32 sends (readings.device_id has a foreign key to rooms.id).
+    deviceId: "AIR-K01",
     length: 6,
     width: 5,
     height: 3,
@@ -251,7 +257,7 @@ export const INITIAL_ROOMS: Room[] = [
     installedAt: "2025-01-10",
   },
   {
-    id: "AIR-C182",
+    id: "AIR-CL02",
     name: "Chem Lab Room",
     floor: "2nd Floor",
     co2Sensor: "MH-Z19C",
@@ -264,7 +270,7 @@ export const INITIAL_ROOMS: Room[] = [
     lpg: 333,
     temp: 28.8,
     humidity: 58,
-    online: true,
+    online: false,
     alertCount: 2,
     installedAt: "2023-11-02",
   },

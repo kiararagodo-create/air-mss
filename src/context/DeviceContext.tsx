@@ -1,6 +1,5 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
-import { devices as initialDevices } from "../data/Data";
-import type { IoTDevice } from "../types";
+import { devices as initialDevices } from "../data/data";import type { IoTDevice } from "../types";
 
 interface DeviceContextValue {
   devices: IoTDevice[];

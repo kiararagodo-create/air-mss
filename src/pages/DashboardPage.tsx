@@ -61,7 +61,16 @@ function clamp(v: number, a: number, b: number) {
 function getStatus(room: Room, thresholds: Thresholds) {
   const co2 = room.co2;
   const lpg = room.lpg ?? 0;
-  const co2Severity = co2 > thresholds.co2.danger ? 3 : co2 > thresholds.co2.high ? 2 : co2 > thresholds.co2.warning ? 1 : 0;
+  const co2Severity =
+    co2 == null
+      ? 0
+      : co2 > thresholds.co2.danger
+      ? 3
+      : co2 > thresholds.co2.high
+      ? 2
+      : co2 > thresholds.co2.warning
+      ? 1
+      : 0;
   const lpgSeverity = lpg > thresholds.lpg.danger ? 3 : lpg > thresholds.lpg.high ? 2 : lpg > thresholds.lpg.warning ? 1 : 0;
   const severity = Math.max(co2Severity, lpgSeverity);
   const tone: Tone[] = ["success", "warning", "high", "danger"];
@@ -108,7 +117,7 @@ export interface Room {
   id: string;
   name: string;
   floor: string;
-  co2: number;
+  co2: number | null;
   lpg?: number | null;
   online: boolean;
   co2Sensor: SensorName;
@@ -177,7 +186,8 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
     setActiveFilter((prev) => (prev === key ? null : key));
   };
 
-  const co2Pct = clamp((selected.co2 / thresholds.co2.danger) * 100, 0, 100);
+  const co2Pct =
+    selected.co2 != null ? clamp((selected.co2 / thresholds.co2.danger) * 100, 0, 100) : 0;
   const lpgPct = selected.lpg != null ? clamp((selected.lpg / thresholds.lpg.danger) * 100, 0, 100) : 0;
   const action = actionMessage(selected, thresholds);
 
@@ -347,7 +357,9 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                     </div>
                     <div style={{ fontSize: 11, color: "#94a3b8" }}>ID: {r.id}</div>
                     <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 12 }}>
-                      <span style={{ color: "#334155" }}>{Math.round(r.co2)} CO2 ppm</span>
+                      <span style={{ color: "#334155" }}>
+                        {r.co2 != null ? `${Math.round(r.co2)} CO2 ppm` : "N/A"}
+                      </span>
                       <span style={{ color: "#334155" }}>
                         {r.lpg != null ? `${Math.round(r.lpg)} LPG ppm` : "N/A"}
                       </span>
@@ -436,7 +448,9 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                         fontSize: 12,
                       }}
                     >
-                      <span style={{ color: "#334155" }}>{Math.round(r.co2)} CO2 ppm</span>
+                      <span style={{ color: "#334155" }}>
+                        {r.co2 != null ? `${Math.round(r.co2)} CO2 ppm` : "N/A"}
+                      </span>
                       <span style={{ color: "#334155" }}>
                         {r.lpg != null ? `${Math.round(r.lpg)} LPG ppm` : "N/A"}
                       </span>
@@ -489,9 +503,17 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                 <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", letterSpacing: 0.5 }}>
                   CO2 &middot; {selected.co2Sensor}
                 </div>
-                <div style={{ fontSize: 34, fontWeight: 800, color: badgeStyles(status.tone).text }}>
-                  {Math.round(selected.co2)}
-                  <span style={{ fontSize: 15, color: "#64748b", fontWeight: 600 }}> ppm</span>
+                <div
+                  style={{
+                    fontSize: 34,
+                    fontWeight: 800,
+                    color: selected.co2 != null ? badgeStyles(status.tone).text : "#94a3b8",
+                  }}
+                >
+                  {selected.co2 != null ? Math.round(selected.co2) : "N/A"}
+                  {selected.co2 != null && (
+                    <span style={{ fontSize: 15, color: "#64748b", fontWeight: 600 }}> ppm</span>
+                  )}
                 </div>
               </div>
               <div
@@ -507,7 +529,7 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                   style={{
                     width: `${co2Pct}%`,
                     height: "100%",
-                    background: badgeStyles(status.tone).text,
+                    background: selected.co2 != null ? badgeStyles(status.tone).text : "#e2e8f0",
                     borderRadius: 999,
                     transition: "width 0.4s ease",
                   }}
@@ -517,6 +539,9 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                 <span>SAFE (0)</span>
                 <span>DANGER ({thresholds.co2.danger})</span>
               </div>
+              {selected.co2 == null && (
+                <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 4 }}>No CO2 sensor installed</div>
+              )}
             </div>
 
             {/* LPG gauge */}

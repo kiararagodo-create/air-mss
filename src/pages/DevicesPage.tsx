@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Info, Plus, Trash2 } from "lucide-react";
-import { Room, SensorInfo, Thresholds, getStatus, volumeOf, deviceAgeLabel, SENSOR_INFO } from "../data/Data";
-import { Badge, badgeStyles } from "../ui";
+import { Room, SensorInfo, Thresholds, getStatus, volumeOf, deviceAgeLabel, SENSOR_INFO } from "../data/data";import { Badge, badgeStyles } from "../ui";
 
 type User = {
   id: string;
@@ -476,7 +475,7 @@ export default function DevicesPage({ rooms, toggleOnline, removeRoom, addRoom, 
                   }}
                 >
                   <span style={{ color: "#64748b" }}>CO2 Reading:</span>
-                  <span style={{ fontWeight: 700 }}>{Math.round(r.co2)} ppm</span>
+                  <span style={{ fontWeight: 700 }}>{r.co2 != null ? `${Math.round(r.co2)} ppm` : "N/A"}</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }}>
                   <span style={{ color: "#64748b" }}>LPG Gas Reading:</span>

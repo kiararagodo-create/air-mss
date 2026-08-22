@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Info, Plus, Trash2 } from "lucide-react";
-import { Room, SensorInfo, Thresholds, getStatus, volumeOf, deviceAgeLabel, SENSOR_INFO } from "../data/data";import { Badge, badgeStyles } from "../ui";
+import { Room, SensorInfo, Thresholds, getStatus, volumeOf, deviceAgeLabel, SENSOR_INFO } from "../data/Data";
+import { Badge, badgeStyles } from "../ui";
 
 type User = {
   id: string;
@@ -37,6 +38,17 @@ const GAS_SENSOR_OPTIONS = [
   "None (CO2 monitoring only)",
 ];
 
+const TEMP_HUMIDITY_SENSOR_OPTIONS = [
+  "DHT11",
+  "DHT22",
+  "SHT31",
+  "SHT35",
+  "BME280",
+  "BME680",
+  "SI7021",
+  "None (No temp/humidity sensor)",
+];
+
 const selectStyle = {
   border: "1px solid #e2e8f0",
   borderRadius: 8,
@@ -65,6 +77,7 @@ function AddDeviceModal({
     occupancy: 1,
     co2Sensor: CO2_SENSOR_OPTIONS[0],
     gasSensor: GAS_SENSOR_OPTIONS[0],
+    tempHumiditySensor: TEMP_HUMIDITY_SENSOR_OPTIONS[0],
     co2: 400,
     lpg: 0,
     temp: 25,
@@ -172,6 +185,21 @@ function AddDeviceModal({
             <span style={{ marginBottom: 6 }}>Gas Sensor</span>
             <select value={form.gasSensor} onChange={(event) => updateField("gasSensor", event.target.value)} style={selectStyle}>
               {GAS_SENSOR_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label style={{ display: "flex", flexDirection: "column", fontSize: 12, color: "#334155" }}>
+            <span style={{ marginBottom: 6 }}>Temp/Humidity Sensor</span>
+            <select
+              value={form.tempHumiditySensor}
+              onChange={(event) => updateField("tempHumiditySensor", event.target.value)}
+              style={selectStyle}
+            >
+              {TEMP_HUMIDITY_SENSOR_OPTIONS.map((opt) => (
                 <option key={opt} value={opt}>
                   {opt}
                 </option>
@@ -458,6 +486,7 @@ export default function DevicesPage({ rooms, toggleOnline, removeRoom, addRoom, 
               <div style={{ marginBottom: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <Badge label={`CO2: ${r.co2Sensor}`} tone="success" />
                 {r.gasSensor && <Badge label={`Gas: ${r.gasSensor}`} tone="success" />}
+                {r.tempHumiditySensor && <Badge label={`T/H: ${r.tempHumiditySensor}`} tone="success" />}
                 <Badge label={st.label} tone={st.tone} />
               </div>
               <div style={{ fontSize: 11.5, color: "#94a3b8", marginBottom: 10 }}>
@@ -491,7 +520,9 @@ export default function DevicesPage({ rooms, toggleOnline, removeRoom, addRoom, 
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }}>
                   <span style={{ color: "#64748b" }}>Temp / Humidity:</span>
                   <span style={{ fontWeight: 700 }}>
-                    {r.temp.toFixed(1)}&deg;C / {Math.round(r.humidity)}%
+                    {r.tempHumiditySensor
+                      ? `${r.temp.toFixed(1)}\u00b0C / ${Math.round(r.humidity)}%`
+                      : "N/A (no sensor)"}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>

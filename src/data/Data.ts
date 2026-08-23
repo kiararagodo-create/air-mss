@@ -24,6 +24,7 @@ export interface Room {
   floor: string;
   co2Sensor: string;
   gasSensor: string | null;
+  tempHumiditySensor?: string | null;
   // Maps this room to a physical ESP32's DEVICE_ID for live Supabase data.
   // Undefined for rooms with no live sensor yet (still using simulated data).
   deviceId?: string;

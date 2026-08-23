@@ -145,8 +145,7 @@ interface DashboardPageProps {
   thresholds: Thresholds;
 }
 
-export default function DashboardPage({ rooms, selectedId, setSelectedId, thresholds }: DashboardPageProps) {
-  const [activeFilter, setActiveFilter] = useState<SummaryFilter>(null);
+
 export default function DashboardPage({ rooms, selectedId, setSelectedId, thresholds }: DashboardPageProps) {
   const [activeFilter, setActiveFilter] = useState<SummaryFilter>(null);
 

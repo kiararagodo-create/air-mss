@@ -13,9 +13,23 @@ export interface ThresholdTier {
   danger: number;
 }
 
+export interface TempTier {
+  freezeBelow: number; // below this = danger (freeze / pipe risk)
+  coolBelow: number;   // freezeBelow–coolBelow = warning (cool)
+  heatAbove: number;   // above this = danger (heat stress / fire risk); coolBelow–heatAbove = comfortable
+}
+
+export interface HumidityTier {
+  dryBelow: number;   // below this = danger (too dry)
+  lowBelow: number;   // dryBelow–lowBelow = warning (low)
+  moldAbove: number;  // above this = danger (mold / condensation risk); lowBelow–moldAbove = comfortable
+}
+
 export interface Thresholds {
   co2: ThresholdTier;
   lpg: ThresholdTier;
+  temp: TempTier;
+  humidity: HumidityTier;
 }
 
 export interface Room {
@@ -69,9 +83,29 @@ export interface SensorInfo {
 }
 
 // Default safety thresholds. Admins can override these from the Settings page.
+//
+// CO2 (MH-Z19C): 1000 ppm = start paying attention (ASHRAE indoor-air-quality
+// guidance re: poor ventilation/drowsiness), 2000 ppm = alarm, 5000 ppm =
+// OSHA 8-hour occupational exposure ceiling (critical).
+//
+// LPG (MQ-6): thresholds are set relative to the Lower Explosive Limit (LEL),
+// not a health exposure limit, since the real danger here is combustion.
+// ~2000 ppm ≈ 10% LEL, the standard conservative early-warning margin used by
+// commercial combustible-gas detectors; ~5000+ ppm escalates to full alarm.
+// Note: MQ-6 is a semiconductor sensor, not a certified gas-safety detector -
+// treat these as relative trigger points to calibrate against your specific
+// board's potentiometer/curve, not lab-grade absolute ppm.
+//
+// Temp/Humidity (DHT22): derived from DHT22 research - normal comfort range
+// 18-27°C / 30-60% RH, with alarm points at commonly-used heat/freeze and
+// mold/dryness cutoffs (35°C, 5°C, 65% RH, 20% RH). DHT22's own hardware
+// spec is -40 to 80°C / 0-100% RH with ±0.5°C / ±2% RH accuracy, so these
+// thresholds sit well within that range.
 export const DEFAULT_THRESHOLDS: Thresholds = {
   co2: { warning: 1000, high: 2000, danger: 5000 },
-  lpg: { warning: 200, high: 500, danger: 1000 },
+  lpg: { warning: 1000, high: 2000, danger: 5000 },
+  temp: { freezeBelow: 5, coolBelow: 18, heatAbove: 35 },
+  humidity: { dryBelow: 20, lowBelow: 30, moldAbove: 65 },
 };
 
 export const SEVERITY_META: SeverityMeta[] = [
@@ -213,6 +247,20 @@ export const SENSOR_INFO: SensorInfo[] = [
       "Fast response time",
       "Preheat required (~20s)",
       "Widely available, low cost",
+    ],
+  },
+  {
+    id: "DHT22",
+    title: "DHT22 Temperature & Humidity Sensor",
+    body: "Digital sensor used to measure ambient temperature and relative humidity, helping monitor comfort and environmental conditions in enclosed spaces.",
+    gases: "N/A (Temp & Humidity only)",
+    range: "-40 to 80°C / 0-100% RH",
+    accuracy: "+/- 0.5°C / +/- 2-5% RH",
+    specs: [
+      "Digital single-bus output",
+      "2s sampling interval",
+      "Low power draw",
+      "3-5 year lifespan",
     ],
   },
 ];

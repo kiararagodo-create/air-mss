@@ -340,18 +340,16 @@ function RemoveDeviceModal({
 
 interface DevicesPageProps {
   rooms: Room[];
-  toggleOnline: (id: string) => void;
   removeRoom: (id: string) => void;
-  addRoom: (form: RoomForm) => void;
+  addRoom: (form: RoomForm) => Promise<void>;
   user: User;
   thresholds: Thresholds;
 }
 
-export default function DevicesPage({ rooms, toggleOnline, removeRoom, addRoom, user, thresholds }: DevicesPageProps) {
+export default function DevicesPage({ rooms, removeRoom, addRoom, user, thresholds }: DevicesPageProps) {
   const [showAdd, setShowAdd] = useState(false);
   const [roomToRemove, setRoomToRemove] = useState<Room | null>(null);
   const canManage = user.role === "admin";
-  const canToggle = user.role === "admin" || user.role === "maintenance";
 
   return (
     <div>
@@ -419,11 +417,11 @@ export default function DevicesPage({ rooms, toggleOnline, removeRoom, addRoom, 
         )}
       </div>
 
-      {showAdd && (
+            {showAdd && (
         <AddDeviceModal
           onClose={() => setShowAdd(false)}
-          onSubmit={(form: RoomForm) => {
-            addRoom(form);
+          onSubmit={async (form: RoomForm) => {
+            await addRoom(form);
             setShowAdd(false);
           }}
         />
@@ -534,22 +532,6 @@ export default function DevicesPage({ rooms, toggleOnline, removeRoom, addRoom, 
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                 <Badge label={r.online ? "Online" : "Offline"} tone={r.online ? "success" : "neutral"} />
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button
-                    onClick={() => canToggle && toggleOnline(r.id)}
-                    disabled={!canToggle}
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      border: "1px solid #e2e8f0",
-                      background: "#fff",
-                      borderRadius: 6,
-                      padding: "6px 10px",
-                      cursor: canToggle ? "pointer" : "not-allowed",
-                      opacity: canToggle ? 1 : 0.5,
-                    }}
-                  >
-                    {r.online ? "Offline" : "Online"}
-                  </button>
                   <button
                     onClick={() => canManage && setRoomToRemove(r)}
                     disabled={!canManage}

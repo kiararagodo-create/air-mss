@@ -1,87 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
-import type { Room, Thresholds } from "../data/Data";
-import { DEFAULT_THRESHOLDS } from "../data/Data";
+import type { Room, Thresholds } from "../data/data";
+import { DEFAULT_THRESHOLDS } from "../data/data";
 import { supabase } from "../lib/supabase";
-
-// NOTE: Room now optionally carries a deviceId that maps it to a physical
-// ESP32's DEVICE_ID (as sent in the sketch's Supabase payload).
-//
-// Rooms WITHOUT a deviceId have NO hardware installed yet. They are always
-// forced offline, with lpg = null and co2 = null ("no sensor installed"),
-// and never get simulated/fake number drift.
-//
-// AIR-K01 has a deviceId (real MQ-6 gas sensor), so its `lpg` field is
-// driven by live Supabase data. It has NO CO2 sensor wired up yet, so its
-// `co2` stays null until an MH-Z19C is physically installed and the ESP32
-// sketch is updated to send a co2 value.
-
-const SEED_ROOMS: Room[] = [
-  {
-    id: "AIR-106",
-    name: "Room 106",
-    floor: "Ground Floor",
-    co2Sensor: "MH-Z19C",
-    gasSensor: "MQ-6",
-    tempHumiditySensor: null,
-    // No deviceId -> no hardware installed -> always offline, no fake data.
-    length: 8,
-    width: 6,
-    height: 3,
-    occupancy: 30,
-    deviceId: "AIR-106",
-    co2: null,
-    lpg: null,
-    temp: 0,
-    humidity: 0,
-    online: false,
-    alertCount: 0,
-    installedAt: "2024-08-15",
-  },
-  {
-    id: "AIR-K01",
-    name: "Kitchen",
-    floor: "3rd Floor",
-    co2Sensor: "MH-Z19C",
-    gasSensor: "MQ-6",
-    tempHumiditySensor: "DHT22",
-    // This room's own id (AIR-K01) is also the value your ESP32 sends as
-    // DEVICE_ID, since readings.device_id has a foreign key to rooms.id.
-    deviceId: "AIR-K01",
-    length: 6,
-    width: 5,
-    height: 3,
-    occupancy: 8,
-    // No CO2 sensor wired up yet -> honestly null, not a fake number.
-    // temp/humidity also stay placeholder until those sensors are added.
-    co2: null,
-    lpg: null, // will be filled by the live fetch/subscription below
-    temp: 30.2,
-    humidity: 60,
-    online: false, // will flip true once a real reading comes in
-    alertCount: 3,
-    installedAt: "2025-01-10",
-  },
-  {
-    id: "AIR-CL02",
-    name: "Chem Lab Room",
-    floor: "2nd Floor",
-    co2Sensor: "MH-Z19C",
-    gasSensor: "MQ-6",
-    tempHumiditySensor: null,
-    // No deviceId -> no hardware installed -> always offline, no fake data.
-    length: 10,
-    width: 8,
-    height: 3.2,
-    occupancy: 25,
-    co2: null,
-    lpg: null,
-    temp: 0,
-    humidity: 0,
-    online: false,
-    alertCount: 0,
-    installedAt: "2023-11-02",
-  },
-];
 
 // Matches DevicesPage.tsx's RoomForm = Partial<Room> & { submitLabel?: string }
 type RoomForm = Partial<Room> & { submitLabel?: string };
@@ -95,6 +15,7 @@ const DEFAULT_SETTINGS: AppSettings = { emailAlerts: true, soundAlarms: true };
 
 interface RoomsContextValue {
   rooms: Room[];
+  loading: boolean;
   selectedId: string;
   setSelectedId: (id: string) => void;
   thresholds: Thresholds;
@@ -102,17 +23,84 @@ interface RoomsContextValue {
   settings: AppSettings;
   setSettings: (s: AppSettings) => void;
   toggleOnline: (id: string) => void;
-  removeRoom: (id: string) => void;
-  addRoom: (form: RoomForm) => void;
+  removeRoom: (id: string) => Promise<void>;
+  addRoom: (form: RoomForm) => Promise<void>;
 }
 
 const RoomsContext = createContext<RoomsContextValue | undefined>(undefined);
 
+// ---------- Supabase "rooms" row <-> Room mapping ----------
+// rooms table columns: id, name, floor, sensor (legacy combined field, kept
+// but unused), co2_sensor, gas_sensor, temp_humidity_sensor, length, width,
+// height, occupancy, co2, lpg, alert_count, last_seen, created_at,
+// installed_at. temp/humidity/online are NOT stored here - they come live
+// from the "readings" table below, keyed by device_id = room id.
+interface RoomRow {
+  id: string;
+  name: string;
+  floor: string;
+  co2_sensor: string | null;
+  gas_sensor: string | null;
+  temp_humidity_sensor: string | null;
+  length: number;
+  width: number;
+  height: number;
+  occupancy: number;
+  co2: number | null;
+  lpg: number | null;
+  alert_count: number | null;
+  installed_at: string | null;
+}
+
+function rowToRoom(row: RoomRow): Room {
+  return {
+    id: row.id,
+    name: row.name,
+    floor: row.floor,
+    co2Sensor: row.co2_sensor ?? "",
+    gasSensor: row.gas_sensor,
+    tempHumiditySensor: row.temp_humidity_sensor,
+    // Every registered room is its own live device: the ESP32 sends
+    // readings.device_id = rooms.id directly.
+    deviceId: row.id,
+    length: row.length,
+    width: row.width,
+    height: row.height,
+    occupancy: row.occupancy,
+    co2: row.co2,
+    lpg: row.lpg,
+    // Placeholder until the readings fetch/subscription below fills these
+    // in for real, per-device.
+    temp: 0,
+    humidity: 0,
+    online: false,
+    alertCount: row.alert_count ?? 0,
+    installedAt: row.installed_at ?? new Date().toISOString().slice(0, 10),
+  };
+}
+
+function roomToInsertRow(form: RoomForm) {
+  return {
+    id: form.id?.trim(),
+    name: form.name ?? "New Room",
+    floor: form.floor ?? "",
+    co2_sensor: form.co2Sensor ?? "MH-Z19C",
+    gas_sensor: form.gasSensor ?? null,
+    temp_humidity_sensor: form.tempHumiditySensor ?? null,
+    length: Number(form.length ?? 6),
+    width: Number(form.width ?? 4),
+    height: Number(form.height ?? 3),
+    occupancy: Number(form.occupancy ?? 1),
+    co2: form.co2 != null ? Number(form.co2) : null,
+    lpg: form.lpg != null ? Number(form.lpg) : null,
+    alert_count: 0,
+    installed_at: new Date().toISOString().slice(0, 10),
+  };
+}
+
 // Shape of a row in the Supabase `readings` table, based on what the ESP32
 // sketch actually POSTs: { device_id, lpg, severity }, plus Supabase's
-// auto-generated columns. `co2` is included here (and will read as null
-// until the ESP32 sketch actually sends it) so this type is ready for when
-// a CO2 sensor is added later — no need to touch this file again then.
+// auto-generated columns.
 interface ReadingRow {
   device_id: string;
   co2: number | null;
@@ -122,33 +110,86 @@ interface ReadingRow {
   severity: number;
   created_at: string;
 }
+
 // How stale a reading can be before we consider that device offline.
-// Loosened to 30s to tolerate browser tab throttling (background tabs slow
-// down setInterval), while still catching a genuinely dead sensor quickly.
 const OFFLINE_THRESHOLD_MS = 30_000; // 30s
 
 export function RoomsProvider({ children }: { children: ReactNode }) {
-  const [rooms, setRooms] = useState<Room[]>(SEED_ROOMS);
-  const [selectedId, setSelectedId] = useState<string>(SEED_ROOMS[0].id);
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState<string>("");
   const [thresholds, setThresholds] = useState<Thresholds>(DEFAULT_THRESHOLDS);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
 
-  // Only rooms with a real deviceId are eligible for live data / online status.
-  const deviceIds = SEED_ROOMS.map((r) => r.deviceId).filter(
-    (id): id is string => !!id
-  );
+  // ---------- Room registry (Supabase "rooms" table) ----------
 
-  // Shared helper: fetch the latest reading for a single deviceId and apply
-  // it to state. Used by the on-mount fetch, the polling fallback, the
-  // visibility-change refetch, and can be reused for a manual refresh button.
+  const refreshRooms = useCallback(async () => {
+    const { data, error } = await supabase.from("rooms").select("*");
+    if (error) {
+      console.error("Failed to fetch rooms:", error.message);
+      return;
+    }
+    if (!data) return;
+    const mapped = data.map((row) => rowToRoom(row as RoomRow));
+    setRooms(mapped);
+    setSelectedId((prev) => (prev && mapped.some((r) => r.id === prev) ? prev : mapped[0]?.id ?? ""));
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      await refreshRooms();
+      setLoading(false);
+    })();
+  }, [refreshRooms]);
+
+  // Realtime: keep the room registry itself in sync (e.g. if a room is
+  // added/removed from another tab or directly in Supabase).
+  useEffect(() => {
+    const channel = supabase
+      .channel("rooms-registry")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "rooms" },
+        (payload) => {
+          if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
+            const updated = rowToRoom(payload.new as RoomRow);
+            setRooms((prev) => {
+              const exists = prev.some((r) => r.id === updated.id);
+              // Preserve any live temp/humidity/online already merged in.
+              const existing = prev.find((r) => r.id === updated.id);
+              const merged = existing
+                ? { ...updated, temp: existing.temp, humidity: existing.humidity, online: existing.online }
+                : updated;
+              return exists ? prev.map((r) => (r.id === merged.id ? merged : r)) : [...prev, merged];
+            });
+          } else if (payload.eventType === "DELETE") {
+            const deletedId = (payload.old as any)?.id;
+            setRooms((prev) => prev.filter((r) => r.id !== deletedId));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // ---------- Live sensor data (Supabase "readings" table) ----------
+  // Only rooms currently in the registry are eligible for live data - this
+  // recomputes automatically whenever `rooms` changes (e.g. a new device
+  // was just added).
+  const deviceIds = rooms.map((r) => r.deviceId).filter((id): id is string => !!id);
+
   const fetchLatestFor = useCallback(async (deviceId: string) => {
     const { data, error } = await supabase
-  .from("readings")
-  .select("device_id, co2, lpg, temp, humidity, severity, created_at")
-  .eq("device_id", deviceId)
-  .order("created_at", { ascending: false })
-  .limit(1)
-  .maybeSingle<ReadingRow>();
+      .from("readings")
+      .select("device_id, co2, lpg, temp, humidity, severity, created_at")
+      .eq("device_id", deviceId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle<ReadingRow>();
 
     if (error) {
       console.error(`Failed to fetch latest reading for ${deviceId}:`, error.message);
@@ -156,32 +197,24 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
     }
     if (!data) return; // no readings yet for this device -> stays offline/null
 
-    const isRecent =
-      Date.now() - new Date(data.created_at).getTime() < OFFLINE_THRESHOLD_MS;
+    const isRecent = Date.now() - new Date(data.created_at).getTime() < OFFLINE_THRESHOLD_MS;
 
-setRooms((prev) =>
-  prev.map((r) =>
-    r.deviceId === deviceId
-      ? {
-          ...r,
-          lpg: data.lpg,
-          co2: data.co2 ?? r.co2,
-          temp: data.temp ?? r.temp,
-          humidity: data.humidity ?? r.humidity,
-          online: isRecent,
-        }
-      : r
-  )
-);
-
+    setRooms((prev) =>
+      prev.map((r) =>
+        r.deviceId === deviceId
+          ? {
+              ...r,
+              lpg: data.lpg,
+              co2: data.co2 ?? r.co2,
+              temp: data.temp ?? r.temp,
+              humidity: data.humidity ?? r.humidity,
+              online: isRecent,
+            }
+          : r
+      )
+    );
   }, []);
 
-  // ---------- Live sensor data (Supabase) ----------
-
-  // On mount: fetch the most recent reading for every room that has a
-  // deviceId, and apply it immediately so the dashboard isn't waiting on the
-  // next realtime event to show real numbers. Rooms with no deviceId are
-  // skipped entirely and stay at their forced offline/null state.
   useEffect(() => {
     if (deviceIds.length === 0) return;
     (async () => {
@@ -190,37 +223,32 @@ setRooms((prev) =>
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [deviceIds.join(",")]);
 
-  // Realtime: subscribe to new INSERTs on `readings` and update the matching
-  // room's lpg (and co2, once sent) live, no polling or page refresh needed.
-  // Requires Replication to be enabled for the `readings` table in
-  // Supabase (Database -> Replication). If that's off, this subscription
-  // will silently receive nothing — the polling effect below is the backup.
   useEffect(() => {
     const channel = supabase
       .channel("readings-live")
       .on(
-  "postgres_changes",
-  { event: "INSERT", schema: "public", table: "readings" },
-  (payload) => {
-    const row = payload.new as ReadingRow;
-    setRooms((prev) =>
-      prev.map((r) =>
-        r.deviceId === row.device_id
-          ? {
-              ...r,
-              lpg: row.lpg,
-              co2: row.co2 ?? r.co2,
-              temp: row.temp ?? r.temp,
-              humidity: row.humidity ?? r.humidity,
-              online: true,
-            }
-          : r
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "readings" },
+        (payload) => {
+          const row = payload.new as ReadingRow;
+          setRooms((prev) =>
+            prev.map((r) =>
+              r.deviceId === row.device_id
+                ? {
+                    ...r,
+                    lpg: row.lpg,
+                    co2: row.co2 ?? r.co2,
+                    temp: row.temp ?? r.temp,
+                    humidity: row.humidity ?? r.humidity,
+                    online: true,
+                  }
+                : r
+            )
+          );
+        }
       )
-    );
-  }
-)
       .subscribe();
 
     return () => {
@@ -228,12 +256,8 @@ setRooms((prev) =>
     };
   }, []);
 
-  // Polling fallback: even if the Realtime subscription drops, was never
-  // enabled, or misses an event, this guarantees the dashboard catches up
-  // quickly. Also handles flipping a room to "offline" if its latest
-  // reading has gone stale (ESP32 powered off, WiFi dropped, etc). Interval
-  // matches the ESP32's 2s SEND_INTERVAL so the dashboard never lags more
-  // than ~2s behind the sensor while this tab is active/foregrounded.
+  // Polling fallback: catches missed realtime events and flips stale
+  // devices offline.
   useEffect(() => {
     if (deviceIds.length === 0) return;
 
@@ -243,16 +267,13 @@ setRooms((prev) =>
       }
     };
 
-    const interval = setInterval(poll, 2000); // check every 2s
+    const interval = setInterval(poll, 2000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [deviceIds.join(",")]);
 
-  // Force an immediate refetch whenever this tab regains focus/visibility.
-  // Browsers throttle setInterval() timers heavily on background tabs, so
-  // switching away (e.g. to Arduino IDE or Supabase) and back can otherwise
-  // cause a stale "OFFLINE" flash even though fresh data is sitting in
-  // Supabase the whole time. This closes that gap instantly on tab-switch.
+  // Refetch immediately when the tab regains focus (background tabs throttle
+  // setInterval heavily).
   useEffect(() => {
     const handleVisibility = () => {
       if (document.visibilityState === "visible" && deviceIds.length > 0) {
@@ -262,64 +283,63 @@ setRooms((prev) =>
     document.addEventListener("visibilitychange", handleVisibility);
     return () => document.removeEventListener("visibilitychange", handleVisibility);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceIds.join(",")]);
+
+  // ---------- Room registry mutations ----------
+
+  // No longer meaningful as a manual toggle now that "online" is derived
+  // purely from reading freshness - kept as a no-op so existing callers
+  // (DevicesPage's Online/Offline button) don't break. Consider removing
+  // that button from the UI since it no longer does anything real.
+  const toggleOnline = useCallback((_id: string) => {
+    console.warn("toggleOnline is a no-op: online status is now derived from live readings, not stored.");
   }, []);
 
-  // ---------- Simulated drift ----------
-  // No-op for every current room: rooms with no deviceId are forced offline
-  // above (and offline rooms are skipped), and rooms WITH a deviceId only
-  // get live lpg/co2 data, never fake drift. Left in place in case you want
-  // to reintroduce drift for a demo/testing room later.
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setRooms((prev) =>
-        prev.map((r) => {
-          if (!r.online) return r; // offline / no-sensor rooms: never drift
-          if (r.deviceId) return r; // rooms with a real sensor: only lpg/co2 are live, no fake drift
-          return r; // no rooms left that reach this branch, kept for clarity
-        })
-      );
-    }, 3000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const toggleOnline = useCallback((id: string) => {
-    setRooms((prev) => prev.map((r) => (r.id === id ? { ...r, online: !r.online } : r)));
-  }, []);
-
-  const removeRoom = useCallback((id: string) => {
+  const removeRoom = useCallback(async (id: string) => {
+    const { error } = await supabase.from("rooms").delete().eq("id", id);
+    if (error) {
+      console.error("Failed to delete room:", error.message);
+      return;
+    }
     setRooms((prev) => prev.filter((r) => r.id !== id));
   }, []);
 
-  const addRoom = useCallback((form: RoomForm) => {
-    const newRoom: Room = {
-      id: form.id?.trim() || `AIR-${Date.now()}`,
-      name: form.name ?? "New Room",
-      floor: form.floor ?? "",
-      co2Sensor: form.co2Sensor ?? "MH-Z19C",
-      gasSensor: form.gasSensor ?? null,
-      tempHumiditySensor: form.tempHumiditySensor ?? null,
-      deviceId: form.deviceId,
-      length: Number(form.length ?? 6),
-      width: Number(form.width ?? 4),
-      height: Number(form.height ?? 3),
-      occupancy: Number(form.occupancy ?? 1),
-      // New rooms start honestly at null unless the form explicitly
-      // provides a starting value.
-      co2: form.co2 != null ? Number(form.co2) : null,
-      lpg: form.lpg != null ? Number(form.lpg) : null,
-      temp: form.deviceId ? Number(form.temp ?? 25) : 0,
-      humidity: form.deviceId ? Number(form.humidity ?? 50) : 0,
-      online: false, // always starts offline until a real reading confirms it's live
-      alertCount: 0,
-      // New devices are installed "now" - not user-editable in the add form.
-      installedAt: new Date().toISOString().slice(0, 10),
-    };
-    setRooms((prev) => [...prev, newRoom]);
+  const addRoom = useCallback(async (form: RoomForm) => {
+    const insertRow = roomToInsertRow(form);
+    if (!insertRow.id) {
+      console.error("Cannot add room: Device ID is required.");
+      return;
+    }
+    const { data, error } = await supabase
+      .from("rooms")
+      .insert(insertRow)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Failed to add room:", error.message);
+      return;
+    }
+    if (data) {
+      setRooms((prev) => [...prev, rowToRoom(data as RoomRow)]);
+    }
   }, []);
 
   return (
     <RoomsContext.Provider
-      value={{ rooms, selectedId, setSelectedId, thresholds, setThresholds, settings, setSettings, toggleOnline, removeRoom, addRoom }}
+      value={{
+        rooms,
+        loading,
+        selectedId,
+        setSelectedId,
+        thresholds,
+        setThresholds,
+        settings,
+        setSettings,
+        toggleOnline,
+        removeRoom,
+        addRoom,
+      }}
     >
       {children}
     </RoomsContext.Provider>

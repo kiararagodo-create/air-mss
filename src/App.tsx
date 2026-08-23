@@ -94,7 +94,9 @@ function SettingsRoute() {
       settings={settings}
       setSettings={setSettings}
       thresholds={thresholds}
-      setThresholds={setThresholds}
+      setThresholds={(nextThresholds) =>
+        setThresholds(nextThresholds as Parameters<typeof setThresholds>[0])
+      }
       user={user}
     />
   );

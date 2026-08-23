@@ -1,6 +1,6 @@
 import { Download } from "lucide-react";
 import { Badge } from "../../ui";
-import { Room, Thresholds, getStatus } from "../../data/Data"
+import { Room, Thresholds, getStatus } from "../../data/data"
 
 interface ReportsPageProps {
   rooms: Room[];

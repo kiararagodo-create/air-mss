@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Info, Plus, Trash2 } from "lucide-react";
+import { Info, Plus, Trash2, Volume2, VolumeX } from "lucide-react";
 import { Room, SensorInfo, Thresholds, getStatus, volumeOf, SENSOR_INFO } from "../data/Data";
 import { Badge, badgeStyles } from "../ui";
 
@@ -344,12 +344,24 @@ interface DevicesPageProps {
   addRoom: (form: RoomForm) => Promise<void>;
   user: User;
   thresholds: Thresholds;
+  toggleSiren: (id: string) => Promise<void>;
+  muteAll: (muted: boolean) => Promise<void>;
 }
 
-export default function DevicesPage({ rooms, removeRoom, addRoom, user, thresholds }: DevicesPageProps) {
+export default function DevicesPage({
+  rooms,
+  removeRoom,
+  addRoom,
+  user,
+  thresholds,
+  toggleSiren,
+  muteAll,
+}: DevicesPageProps) {
   const [showAdd, setShowAdd] = useState(false);
   const [roomToRemove, setRoomToRemove] = useState<Room | null>(null);
   const canManage = user.role === "admin";
+
+  const allMuted = rooms.length > 0 && rooms.every((r) => r.sirenMuted);
 
   return (
     <div>
@@ -438,6 +450,55 @@ export default function DevicesPage({ rooms, removeRoom, addRoom, user, threshol
         />
       )}
 
+      {canManage && rooms.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 10,
+            background: "#fff",
+            border: "1px solid #eef1f4",
+            borderRadius: 12,
+            padding: "12px 16px",
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {allMuted ? <VolumeX size={16} color="#64748b" /> : <Volume2 size={16} color="#0d9488" />}
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+              Siren Control &mdash; all devices
+            </span>
+            <span style={{ fontSize: 12, color: "#94a3b8" }}>
+              Mutes/unmutes the physical buzzer on every registered device. Readings and dashboard
+              alerts are unaffected.
+            </span>
+          </div>
+          <button
+            onClick={() => muteAll(!allMuted)}
+            type="button"
+            style={{
+              fontSize: 12.5,
+              fontWeight: 700,
+              border: allMuted ? "1px solid #e2e8f0" : "1px solid #fde68a",
+              background: allMuted ? "#f8fafc" : "#fffbeb",
+              color: allMuted ? "#475569" : "#b45309",
+              borderRadius: 8,
+              padding: "8px 14px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {allMuted ? <Volume2 size={14} /> : <VolumeX size={14} />}
+            {allMuted ? "Unmute All" : "Mute All"}
+          </button>
+        </div>
+      )}
+
       <div className="air-device-grid">
         {rooms.map((r) => {
           const st = getStatus(r, thresholds);
@@ -486,6 +547,7 @@ export default function DevicesPage({ rooms, removeRoom, addRoom, user, threshol
                 {r.gasSensor && <Badge label={`Gas: ${r.gasSensor}`} tone="success" />}
                 {r.tempHumiditySensor && <Badge label={`T/H: ${r.tempHumiditySensor}`} tone="success" />}
                 <Badge label={st.label} tone={st.tone} />
+                {r.sirenMuted && <Badge label="Siren Muted" tone="neutral" />}
               </div>
               <div style={{ fontSize: 11.5, color: "#94a3b8", marginBottom: 10 }}>
                 {r.length}m x {r.width}m x {r.height}m &middot; {volumeOf(r)} m3 &middot; {r.occupancy}{" "}
@@ -528,6 +590,28 @@ export default function DevicesPage({ rooms, removeRoom, addRoom, user, threshol
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                 <Badge label={r.online ? "Online" : "Offline"} tone={r.online ? "success" : "neutral"} />
                 <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={() => canManage && toggleSiren(r.id)}
+                    disabled={!canManage}
+                    type="button"
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      border: r.sirenMuted ? "1px solid #e2e8f0" : "1px solid #99f6e4",
+                      background: r.sirenMuted ? "#f8fafc" : "#fff",
+                      color: r.sirenMuted ? "#475569" : "#0d9488",
+                      borderRadius: 6,
+                      padding: "6px 10px",
+                      cursor: canManage ? "pointer" : "not-allowed",
+                      opacity: canManage ? 1 : 0.5,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                  >
+                    {r.sirenMuted ? <VolumeX size={12} /> : <Volume2 size={12} />}
+                    {r.sirenMuted ? "Muted" : "Siren On"}
+                  </button>
                   <button
                     onClick={() => canManage && setRoomToRemove(r)}
                     disabled={!canManage}

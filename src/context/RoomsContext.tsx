@@ -8,10 +8,9 @@ type RoomForm = Partial<Room> & { submitLabel?: string };
 
 export interface AppSettings {
   emailAlerts: boolean;
-  soundAlarms: boolean;
 }
 
-const DEFAULT_SETTINGS: AppSettings = { emailAlerts: true, soundAlarms: true };
+const DEFAULT_SETTINGS: AppSettings = { emailAlerts: true };
 
 interface RoomsContextValue {
   rooms: Room[];
@@ -25,6 +24,8 @@ interface RoomsContextValue {
   toggleOnline: (id: string) => void;
   removeRoom: (id: string) => Promise<void>;
   addRoom: (form: RoomForm) => Promise<void>;
+  toggleSiren: (id: string) => Promise<void>;
+  muteAll: (muted: boolean) => Promise<void>;
 }
 
 const RoomsContext = createContext<RoomsContextValue | undefined>(undefined);
@@ -33,8 +34,8 @@ const RoomsContext = createContext<RoomsContextValue | undefined>(undefined);
 // rooms table columns: id, name, floor, sensor (legacy combined field, kept
 // but unused), co2_sensor, gas_sensor, temp_humidity_sensor, length, width,
 // height, occupancy, co2, lpg, alert_count, last_seen, created_at,
-// installed_at. temp/humidity/online are NOT stored here - they come live
-// from the "readings" table below, keyed by device_id = room id.
+// installed_at, siren_muted. temp/humidity/online are NOT stored here - they
+// come live from the "readings" table below, keyed by device_id = room id.
 interface RoomRow {
   id: string;
   name: string;
@@ -50,6 +51,7 @@ interface RoomRow {
   lpg: number | null;
   alert_count: number | null;
   installed_at: string | null;
+  siren_muted: boolean | null;
 }
 
 function rowToRoom(row: RoomRow): Room {
@@ -76,6 +78,7 @@ function rowToRoom(row: RoomRow): Room {
     online: false,
     alertCount: row.alert_count ?? 0,
     installedAt: row.installed_at ?? new Date().toISOString().slice(0, 10),
+    sirenMuted: row.siren_muted ?? false,
   };
 }
 
@@ -95,6 +98,9 @@ function roomToInsertRow(form: RoomForm) {
     lpg: form.lpg != null ? Number(form.lpg) : null,
     alert_count: 0,
     installed_at: new Date().toISOString().slice(0, 10),
+    // siren_muted has a DB default of false, so it's fine to omit here -
+    // included explicitly for clarity.
+    siren_muted: false,
   };
 }
 
@@ -144,7 +150,8 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
   }, [refreshRooms]);
 
   // Realtime: keep the room registry itself in sync (e.g. if a room is
-  // added/removed from another tab or directly in Supabase).
+  // added/removed/updated - including siren_muted - from another tab or
+  // directly in Supabase).
   useEffect(() => {
     const channel = supabase
       .channel("rooms-registry")
@@ -325,6 +332,48 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Flip a single device's siren_muted flag. Writes to Supabase first so the
+  // ESP32 picks it up on its next poll; the local optimistic update makes the
+  // UI feel instant, and the realtime subscription above will reconcile it
+  // (and sync it to any other open tab) once the write confirms.
+  const toggleSiren = useCallback(
+    async (id: string) => {
+      const current = rooms.find((r) => r.id === id);
+      if (!current) return;
+      const next = !current.sirenMuted;
+
+      setRooms((prev) => prev.map((r) => (r.id === id ? { ...r, sirenMuted: next } : r)));
+
+      const { error } = await supabase.from("rooms").update({ siren_muted: next }).eq("id", id);
+      if (error) {
+        console.error("Failed to toggle siren mute:", error.message);
+        // Roll back the optimistic update on failure.
+        setRooms((prev) => prev.map((r) => (r.id === id ? { ...r, sirenMuted: current.sirenMuted } : r)));
+      }
+    },
+    [rooms]
+  );
+
+  // Mute or unmute every registered device at once. Applies the same
+  // siren_muted value to all rooms currently in the registry - not a
+  // separate global setting, just a bulk write of the per-device flag.
+  const muteAll = useCallback(
+    async (muted: boolean) => {
+      const previous = rooms;
+      setRooms((prev) => prev.map((r) => ({ ...r, sirenMuted: muted })));
+
+      const ids = rooms.map((r) => r.id);
+      if (ids.length === 0) return;
+
+      const { error } = await supabase.from("rooms").update({ siren_muted: muted }).in("id", ids);
+      if (error) {
+        console.error("Failed to mute/unmute all devices:", error.message);
+        setRooms(previous);
+      }
+    },
+    [rooms]
+  );
+
   return (
     <RoomsContext.Provider
       value={{
@@ -339,6 +388,8 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
         toggleOnline,
         removeRoom,
         addRoom,
+        toggleSiren,
+        muteAll,
       }}
     >
       {children}

@@ -53,6 +53,10 @@ export interface Room {
   online: boolean;
   alertCount: number;
   installedAt: string; // ISO date string - when this device was deployed
+  // Per-device siren mute flag, polled by the ESP32 firmware (siren_muted
+  // column in Supabase's "rooms" table). Muting silences the physical
+  // buzzer only - readings/severity/dashboard alerts keep working normally.
+  sirenMuted: boolean;
 }
 
 export interface SeverityMeta {
@@ -283,6 +287,7 @@ export const INITIAL_ROOMS: Room[] = [
     online: false,
     alertCount: 0,
     installedAt: "2024-08-15",
+    sirenMuted: false,
   },
   {
     id: "AIR-K01",
@@ -304,6 +309,7 @@ export const INITIAL_ROOMS: Room[] = [
     online: true,
     alertCount: 3,
     installedAt: "2025-01-10",
+    sirenMuted: false,
   },
   {
     id: "AIR-CL02",
@@ -322,6 +328,7 @@ export const INITIAL_ROOMS: Room[] = [
     online: false,
     alertCount: 2,
     installedAt: "2023-11-02",
+    sirenMuted: false,
   },
 ];
 

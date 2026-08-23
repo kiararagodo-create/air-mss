@@ -1,11 +1,10 @@
 import { useState, type CSSProperties } from "react";
-import { Bell, Save, Shield, SlidersHorizontal, User, Volume2 } from "lucide-react";
+import { Bell, Save, Shield, SlidersHorizontal, User } from "lucide-react";
 import { Badge, Toggle } from "../../ui";
 
 // Local type definitions to avoid depending on AdminDashboard module
 type Settings = {
   emailAlerts: boolean;
-  soundAlarms: boolean;
 };
 
 type SensorTier = { warning: number; high: number; danger: number };
@@ -62,7 +61,6 @@ export default function SettingsPage({ settings, setSettings, thresholds, setThr
 
   const overviewRows: [string, string][] = [
     ["Email Dispatches:", local.emailAlerts ? "Enabled" : "Disabled"],
-    ["Audible Siren Alarms:", local.soundAlarms ? "Active" : "Inactive"],
     [
       "CO2 tiers:",
       `${localThresholds.co2.warning} / ${localThresholds.co2.high} / ${localThresholds.co2.danger} ppm`,
@@ -145,7 +143,7 @@ export default function SettingsPage({ settings, setSettings, thresholds, setThr
               background: "#f8fafc",
               borderRadius: 10,
               padding: 14,
-              marginBottom: 12,
+              marginBottom: 16,
             }}
           >
             <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
@@ -160,31 +158,6 @@ export default function SettingsPage({ settings, setSettings, thresholds, setThr
               </div>
             </div>
             <Toggle checked={local.emailAlerts} onChange={(v: boolean) => setLocal({ ...local, emailAlerts: v })} />
-          </div>
-
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              background: "#f8fafc",
-              borderRadius: 10,
-              padding: 14,
-              marginBottom: 16,
-            }}
-          >
-            <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-              <Volume2 size={16} color="#0d9488" style={{ marginTop: 2 }} />
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>
-                  Audible Siren Alarms
-                </div>
-                <div style={{ fontSize: 12, color: "#64748b" }}>
-                  Trigger campus buzzer siren on hardware units during gas leak risk states.
-                </div>
-              </div>
-            </div>
-            <Toggle checked={local.soundAlarms} onChange={(v: boolean) => setLocal({ ...local, soundAlarms: v })} />
           </div>
 
           <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 12 }}>

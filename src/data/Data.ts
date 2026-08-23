@@ -100,16 +100,17 @@ export interface SensorInfo {
 // treat these as relative trigger points to calibrate against your specific
 // board's potentiometer/curve, not lab-grade absolute ppm.
 //
-// Temp/Humidity (DHT22): derived from DHT22 research - normal comfort range
-// 18-27°C / 30-60% RH, with alarm points at commonly-used heat/freeze and
-// mold/dryness cutoffs (35°C, 5°C, 65% RH, 20% RH). DHT22's own hardware
-// spec is -40 to 80°C / 0-100% RH with ±0.5°C / ±2% RH accuracy, so these
-// thresholds sit well within that range.
+// Temp/Humidity (DHT22): normal/danger humidity band widened to 20-80% RH
+// to reflect typical Philippine ambient humidity, rather than a temperate-
+// climate comfort range - danger only below 20% or above 80%. Temp alarm
+// points (35°C, 5°C) unchanged. DHT22's own hardware spec is -40 to 80°C /
+// 0-100% RH with ±0.5°C / ±2% RH accuracy, so these thresholds sit well
+// within that range.
 export const DEFAULT_THRESHOLDS: Thresholds = {
   co2: { warning: 1000, high: 2000, danger: 5000 },
   lpg: { warning: 1000, high: 2000, danger: 5000 },
   temp: { freezeBelow: 5, coolBelow: 18, heatAbove: 35 },
-  humidity: { dryBelow: 20, lowBelow: 30, moldAbove: 65 },
+  humidity: { dryBelow: 20, lowBelow: 30, moldAbove: 80 },
 };
 
 export const SEVERITY_META: SeverityMeta[] = [

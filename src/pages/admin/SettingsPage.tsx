@@ -10,9 +10,15 @@ type Settings = {
 
 type SensorTier = { warning: number; high: number; danger: number };
 
+// Matches Data.ts's TempTier / HumidityTier shape for the DHT22 sensor.
+type TempTier = { freezeBelow: number; coolBelow: number; heatAbove: number };
+type HumidityTier = { dryBelow: number; lowBelow: number; moldAbove: number };
+
 type Thresholds = {
   co2: SensorTier;
   lpg: SensorTier;
+  temp: TempTier;
+  humidity: HumidityTier;
 };
 
 type AppUser = {
@@ -64,6 +70,14 @@ export default function SettingsPage({ settings, setSettings, thresholds, setThr
     [
       "LPG tiers:",
       `${localThresholds.lpg.warning} / ${localThresholds.lpg.high} / ${localThresholds.lpg.danger} ppm`,
+    ],
+    [
+      "Temp tiers:",
+      `${localThresholds.temp.freezeBelow}°C / ${localThresholds.temp.coolBelow}°C / ${localThresholds.temp.heatAbove}°C`,
+    ],
+    [
+      "Humidity tiers:",
+      `${localThresholds.humidity.dryBelow}% / ${localThresholds.humidity.lowBelow}% / ${localThresholds.humidity.moldAbove}%`,
     ],
   ];
 
@@ -229,7 +243,7 @@ export default function SettingsPage({ settings, setSettings, thresholds, setThr
             </div>
           </div>
 
-          <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 16 }}>
+          <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
               <Shield size={15} color="#0d9488" />
               <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>
@@ -286,6 +300,122 @@ export default function SettingsPage({ settings, setSettings, thresholds, setThr
             <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>
               Defaults follow a common teaching model, not a cited standard. Justify final figures
               with ASHRAE 62.1 / NIOSH (CO2) and NFPA 58 or your sensor's calibrated data (LPG).
+            </div>
+          </div>
+
+          <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <Shield size={15} color="#0d9488" />
+              <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>
+                DHT22 Temperature Thresholds (°C)
+              </span>
+            </div>
+            <div className="air-threshold-grid">
+              <div>
+                <label style={smallLabel}>FREEZE BELOW</label>
+                <input
+                  type="number"
+                  disabled={user.role !== "admin"}
+                  style={{ ...field, marginTop: 4 }}
+                  value={localThresholds.temp.freezeBelow}
+                  onChange={(e) =>
+                    setLocalThresholds({
+                      ...localThresholds,
+                      temp: { ...localThresholds.temp, freezeBelow: Number(e.target.value) },
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label style={smallLabel}>COOL BELOW</label>
+                <input
+                  type="number"
+                  disabled={user.role !== "admin"}
+                  style={{ ...field, marginTop: 4 }}
+                  value={localThresholds.temp.coolBelow}
+                  onChange={(e) =>
+                    setLocalThresholds({
+                      ...localThresholds,
+                      temp: { ...localThresholds.temp, coolBelow: Number(e.target.value) },
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label style={smallLabel}>HEAT ABOVE</label>
+                <input
+                  type="number"
+                  disabled={user.role !== "admin"}
+                  style={{ ...field, marginTop: 4 }}
+                  value={localThresholds.temp.heatAbove}
+                  onChange={(e) =>
+                    setLocalThresholds({
+                      ...localThresholds,
+                      temp: { ...localThresholds.temp, heatAbove: Number(e.target.value) },
+                    })
+                  }
+                />
+              </div>
+            </div>
+          </div>
+
+          <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <Shield size={15} color="#0d9488" />
+              <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>
+                DHT22 Humidity Thresholds (% RH)
+              </span>
+            </div>
+            <div className="air-threshold-grid">
+              <div>
+                <label style={smallLabel}>DRY BELOW</label>
+                <input
+                  type="number"
+                  disabled={user.role !== "admin"}
+                  style={{ ...field, marginTop: 4 }}
+                  value={localThresholds.humidity.dryBelow}
+                  onChange={(e) =>
+                    setLocalThresholds({
+                      ...localThresholds,
+                      humidity: { ...localThresholds.humidity, dryBelow: Number(e.target.value) },
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label style={smallLabel}>LOW BELOW</label>
+                <input
+                  type="number"
+                  disabled={user.role !== "admin"}
+                  style={{ ...field, marginTop: 4 }}
+                  value={localThresholds.humidity.lowBelow}
+                  onChange={(e) =>
+                    setLocalThresholds({
+                      ...localThresholds,
+                      humidity: { ...localThresholds.humidity, lowBelow: Number(e.target.value) },
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label style={smallLabel}>MOLD ABOVE</label>
+                <input
+                  type="number"
+                  disabled={user.role !== "admin"}
+                  style={{ ...field, marginTop: 4 }}
+                  value={localThresholds.humidity.moldAbove}
+                  onChange={(e) =>
+                    setLocalThresholds({
+                      ...localThresholds,
+                      humidity: { ...localThresholds.humidity, moldAbove: Number(e.target.value) },
+                    })
+                  }
+                />
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>
+              Defaults derived from common DHT22 comfort/mold-risk reference bands (18-27°C,
+              30-60% RH normal range). Not a cited regulatory standard.
             </div>
           </div>
 

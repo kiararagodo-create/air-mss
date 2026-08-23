@@ -523,10 +523,6 @@ export default function DevicesPage({ rooms, removeRoom, addRoom, user, threshol
                       : "N/A (no sensor)"}
                   </span>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
-                  <span style={{ color: "#64748b" }}>Device Age:</span>
-                  <span style={{ fontWeight: 700 }}>{deviceAgeLabel(r.installedAt)}</span>
-                </div>
               </div>
 
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>

@@ -22,6 +22,7 @@ const SEED_ROOMS: Room[] = [
     floor: "Ground Floor",
     co2Sensor: "MH-Z19C",
     gasSensor: "MQ-6",
+    tempHumiditySensor: null,
     // No deviceId -> no hardware installed -> always offline, no fake data.
     length: 8,
     width: 6,
@@ -42,6 +43,7 @@ const SEED_ROOMS: Room[] = [
     floor: "3rd Floor",
     co2Sensor: "MH-Z19C",
     gasSensor: "MQ-6",
+    tempHumiditySensor: "DHT22",
     // This room's own id (AIR-K01) is also the value your ESP32 sends as
     // DEVICE_ID, since readings.device_id has a foreign key to rooms.id.
     deviceId: "AIR-K01",
@@ -65,6 +67,7 @@ const SEED_ROOMS: Room[] = [
     floor: "2nd Floor",
     co2Sensor: "MH-Z19C",
     gasSensor: "MQ-6",
+    tempHumiditySensor: null,
     // No deviceId -> no hardware installed -> always offline, no fake data.
     length: 10,
     width: 8,
@@ -114,10 +117,11 @@ interface ReadingRow {
   device_id: string;
   co2: number | null;
   lpg: number;
+  temp: number | null;
+  humidity: number | null;
   severity: number;
   created_at: string;
 }
-
 // How stale a reading can be before we consider that device offline.
 // Loosened to 30s to tolerate browser tab throttling (background tabs slow
 // down setInterval), while still catching a genuinely dead sensor quickly.
@@ -139,12 +143,12 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
   // visibility-change refetch, and can be reused for a manual refresh button.
   const fetchLatestFor = useCallback(async (deviceId: string) => {
     const { data, error } = await supabase
-      .from("readings")
-      .select("device_id, co2, lpg, severity, created_at")
-      .eq("device_id", deviceId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle<ReadingRow>();
+  .from("readings")
+  .select("device_id, co2, lpg, temp, humidity, severity, created_at")
+  .eq("device_id", deviceId)
+  .order("created_at", { ascending: false })
+  .limit(1)
+  .maybeSingle<ReadingRow>();
 
     if (error) {
       console.error(`Failed to fetch latest reading for ${deviceId}:`, error.message);
@@ -155,21 +159,21 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
     const isRecent =
       Date.now() - new Date(data.created_at).getTime() < OFFLINE_THRESHOLD_MS;
 
-    setRooms((prev) =>
-      prev.map((r) =>
-        r.deviceId === deviceId
-          ? {
-              ...r,
-              lpg: data.lpg,
-              // co2 stays null until the ESP32 sketch actually sends it —
-              // this line is future-proofed so nothing needs to change here
-              // once a real CO2 sensor is added, only the sketch/payload.
-              co2: data.co2 ?? r.co2,
-              online: isRecent,
-            }
-          : r
-      )
-    );
+setRooms((prev) =>
+  prev.map((r) =>
+    r.deviceId === deviceId
+      ? {
+          ...r,
+          lpg: data.lpg,
+          co2: data.co2 ?? r.co2,
+          temp: data.temp ?? r.temp,
+          humidity: data.humidity ?? r.humidity,
+          online: isRecent,
+        }
+      : r
+  )
+);
+
   }, []);
 
   // ---------- Live sensor data (Supabase) ----------
@@ -197,19 +201,26 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
     const channel = supabase
       .channel("readings-live")
       .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "readings" },
-        (payload) => {
-          const row = payload.new as ReadingRow;
-          setRooms((prev) =>
-            prev.map((r) =>
-              r.deviceId === row.device_id
-                ? { ...r, lpg: row.lpg, co2: row.co2 ?? r.co2, online: true }
-                : r
-            )
-          );
-        }
+  "postgres_changes",
+  { event: "INSERT", schema: "public", table: "readings" },
+  (payload) => {
+    const row = payload.new as ReadingRow;
+    setRooms((prev) =>
+      prev.map((r) =>
+        r.deviceId === row.device_id
+          ? {
+              ...r,
+              lpg: row.lpg,
+              co2: row.co2 ?? r.co2,
+              temp: row.temp ?? r.temp,
+              humidity: row.humidity ?? r.humidity,
+              online: true,
+            }
+          : r
       )
+    );
+  }
+)
       .subscribe();
 
     return () => {
@@ -286,6 +297,7 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
       floor: form.floor ?? "",
       co2Sensor: form.co2Sensor ?? "MH-Z19C",
       gasSensor: form.gasSensor ?? null,
+      tempHumiditySensor: form.tempHumiditySensor ?? null,
       deviceId: form.deviceId,
       length: Number(form.length ?? 6),
       width: Number(form.width ?? 4),

@@ -147,11 +147,44 @@ interface DashboardPageProps {
 
 export default function DashboardPage({ rooms, selectedId, setSelectedId, thresholds }: DashboardPageProps) {
   const [activeFilter, setActiveFilter] = useState<SummaryFilter>(null);
+export default function DashboardPage({ rooms, selectedId, setSelectedId, thresholds }: DashboardPageProps) {
+  const [activeFilter, setActiveFilter] = useState<SummaryFilter>(null);
+
+  // Empty state: no rooms registered yet — avoid crashing on rooms[0]/undefined.
+  if (rooms.length === 0) {
+    return (
+      <div>
+        <h1 style={{ fontSize: 22, fontWeight: 800, color: "#0f172a", margin: 0 }}>
+          IoT Environmental Safety Dashboard
+        </h1>
+        <p style={{ color: "#64748b", fontSize: 13.5, margin: "4px 0 20px" }}>
+          Real-time CO2 & LPG telemetry across Asian College premises
+        </p>
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #eef1f4",
+            borderRadius: 12,
+            padding: "60px 20px",
+            textAlign: "center",
+          }}
+        >
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a", marginBottom: 6 }}>
+            No rooms registered yet
+          </div>
+          <div style={{ fontSize: 13, color: "#64748b" }}>
+            Add a device from the Devices page to start monitoring.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const selected = rooms.find((r) => r.id === selectedId) || rooms[0];
   const status = getStatus(selected, thresholds);
 
   const safeRooms = rooms.filter((r) => getStatus(r, thresholds).severity === 0);
+  // ...the rest of your original function continues unchanged from he
   const warningHighRooms = rooms.filter((r) => {
     const s = getStatus(r, thresholds).severity;
     return s === 1 || s === 2;

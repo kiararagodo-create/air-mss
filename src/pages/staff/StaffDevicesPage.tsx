@@ -1,7 +1,7 @@
 import DeviceCard from "../../components/DeviceCard";
 import SensorSpecCard from "../../components/SensorSpecCard";
-import { SENSOR_INFO } from "../../data/data";
-import type { SensorInfo } from "../../data/data";
+import { SENSOR_INFO } from "../../data/Data";
+import type { SensorInfo } from "../../data/Data";
 import { useDevices } from "../../context/DeviceContext";
 import { useAuth } from "../../context/AuthContext";
 import { getPermissions } from "../../lib/permissions";

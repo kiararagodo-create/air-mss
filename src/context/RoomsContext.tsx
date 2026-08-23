@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
-import type { Room, Thresholds } from "../data/data";
-import { DEFAULT_THRESHOLDS } from "../data/data";
+import type { Room, Thresholds } from "../data/Data";
+import { DEFAULT_THRESHOLDS } from "../data/Data";
 import { supabase } from "../lib/supabase";
 
 // NOTE: Room now optionally carries a deviceId that maps it to a physical

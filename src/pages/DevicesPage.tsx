@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Info, Plus, Trash2 } from "lucide-react";
-import { Room, SensorInfo, Thresholds, getStatus, volumeOf, deviceAgeLabel, SENSOR_INFO } from "../data/data";
+import { Room, SensorInfo, Thresholds, getStatus, volumeOf, deviceAgeLabel, SENSOR_INFO } from "../data/Data";
 import { Badge, badgeStyles } from "../ui";
 
 type User = {

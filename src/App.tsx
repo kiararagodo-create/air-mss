@@ -1,6 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
-import { DeviceProvider } from "./context/DeviceContext";
 import { RoomsProvider, useRooms } from "./context/RoomsContext";
 import ProtectedRoute from "./routes/ProtectedRoute";
 import RoleRoute from "./routes/RoleRoute";
@@ -115,28 +114,26 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <DeviceProvider>
-          <RoomsProvider>
-            <Routes>
-              <Route path="/login" element={<LoginPage />} />
+        <RoomsProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
 
-              <Route element={<ProtectedRoute />}>
-                <Route element={<DashboardLayout />}>
-                  <Route path="/dashboard" element={<DashboardRoute />} />
-                  <Route path="/devices" element={<DevicesRoute />} />
+            <Route element={<ProtectedRoute />}>
+              <Route element={<DashboardLayout />}>
+                <Route path="/dashboard" element={<DashboardRoute />} />
+                <Route path="/devices" element={<DevicesRoute />} />
 
-                  <Route element={<RoleRoute allow={["admin"]} />}>
-                    <Route path="/reports" element={<ReportsRoute />} />
-                    <Route path="/settings" element={<SettingsRoute />} />
-                    <Route path="/personnel" element={<PersonnelManagementPage />} />
-                  </Route>
+                <Route element={<RoleRoute allow={["admin"]} />}>
+                  <Route path="/reports" element={<ReportsRoute />} />
+                  <Route path="/settings" element={<SettingsRoute />} />
+                  <Route path="/personnel" element={<PersonnelManagementPage />} />
                 </Route>
               </Route>
+            </Route>
 
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
-            </Routes>
-          </RoomsProvider>
-        </DeviceProvider>
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Routes>
+        </RoomsProvider>
       </AuthProvider>
     </BrowserRouter>
   );

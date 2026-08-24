@@ -163,10 +163,22 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
             const updated = rowToRoom(payload.new as RoomRow);
             setRooms((prev) => {
               const exists = prev.some((r) => r.id === updated.id);
-              // Preserve any live temp/humidity/online already merged in.
+              // Preserve any live temp/humidity/online/co2/lpg already merged
+              // in from the "readings" table. The "rooms" table's own
+              // co2/lpg columns are stale placeholder fields (e.g. the 400
+              // default from AddDeviceModal's form) - they must NEVER
+              // clobber the live readings values just because an unrelated
+              // column (like siren_muted) changed on this row.
               const existing = prev.find((r) => r.id === updated.id);
               const merged = existing
-                ? { ...updated, temp: existing.temp, humidity: existing.humidity, online: existing.online }
+                ? {
+                    ...updated,
+                    temp: existing.temp,
+                    humidity: existing.humidity,
+                    online: existing.online,
+                    co2: existing.co2,
+                    lpg: existing.lpg,
+                  }
                 : updated;
               return exists ? prev.map((r) => (r.id === merged.id ? merged : r)) : [...prev, merged];
             });

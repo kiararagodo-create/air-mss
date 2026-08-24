@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bell, CheckCircle2, ChevronDown, Droplets, Thermometer, X } from "lucide-react";
+import { Bell, CheckCircle2, Droplets, Thermometer, X } from "lucide-react";
 
 // Lightweight local replacements for ./ui to avoid missing-module errors.
 // Kept minimal — styling inline to match expected usage in this file.
@@ -103,11 +103,20 @@ function actionMessage(room: Room, thresholds: Thresholds): ActionPlan {
   };
 }
 
-function volumeOf(_sensor: Room | string) {
-  // placeholder: original function likely maps a Room or sensor ID to a room volume in m3.
-  // If passed a Room, we could derive volume from occupancy as a fallback; keep simple for now.
-  if (typeof _sensor === "string") return 0;
-  return 0;
+// Computes a gas severity/tone/label from a single reading against its own
+// thresholds only - kept separate from getStatus() (which combines CO2 +
+// LPG for the overall room badge) so the CO2 gauge and LPG gauge can each
+// reflect their own reading independently, instead of one gas's danger
+// level bleeding color into the other's box.
+function getGasStatus(
+  value: number | null | undefined,
+  t: { warning: number; high: number; danger: number }
+): { severity: number; tone: Tone; label: string } {
+  if (value == null) return { severity: 0, tone: "neutral", label: "N/A" };
+  const severity = value > t.danger ? 3 : value > t.high ? 2 : value > t.warning ? 1 : 0;
+  const tone: Tone[] = ["success", "warning", "high", "danger"];
+  const labels = ["OK", "Monitor", "Investigate", "DANGER"];
+  return { severity, tone: tone[severity], label: labels[severity] };
 }
 
 // Local type definitions to avoid depending on AdminDashboard module.
@@ -222,6 +231,11 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
     selected.co2 != null ? clamp((selected.co2 / thresholds.co2.danger) * 100, 0, 100) : 0;
   const lpgPct = selected.lpg != null ? clamp((selected.lpg / thresholds.lpg.danger) * 100, 0, 100) : 0;
   const action = actionMessage(selected, thresholds);
+
+  // Independent per-gas status for the gauge colors below - NOT the same as
+  // `status` above, which combines both gases for the overall room badge.
+  const co2GasStatus = getGasStatus(selected.co2, thresholds.co2);
+  const lpgGasStatus = getGasStatus(selected.lpg, thresholds.lpg);
 
   const co2Guide: [string, string, Tone][] = [
     [`< ${thresholds.co2.warning} ppm`, "Safe / Good", "success"],
@@ -529,13 +543,9 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                 <span style={{ fontWeight: 800, fontSize: 16, color: "#0f172a" }}>
                   {selected.name}
                 </span>
-                <ChevronDown size={16} color="#94a3b8" />
                 <span style={{ fontSize: 12, color: "#94a3b8" }}>{selected.floor}</span>
               </div>
-              <div style={{ fontSize: 11, color: "#94a3b8" }}>
-                ID: {selected.id} &middot; {volumeOf(selected)} m3 &middot; {selected.occupancy}{" "}
-                occupants
-              </div>
+              <div style={{ fontSize: 11, color: "#94a3b8" }}>ID: {selected.id}</div>
             </div>
             <Badge
               label={selected.online ? "ONLINE" : "OFFLINE"}
@@ -554,7 +564,7 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                   style={{
                     fontSize: 34,
                     fontWeight: 800,
-                    color: selected.co2 != null ? badgeStyles(status.tone).text : "#94a3b8",
+                    color: selected.co2 != null ? badgeStyles(co2GasStatus.tone).text : "#94a3b8",
                   }}
                 >
                   {selected.co2 != null ? Math.round(selected.co2) : "N/A"}
@@ -576,7 +586,7 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                   style={{
                     width: `${co2Pct}%`,
                     height: "100%",
-                    background: selected.co2 != null ? badgeStyles(status.tone).text : "#e2e8f0",
+                    background: selected.co2 != null ? badgeStyles(co2GasStatus.tone).text : "#e2e8f0",
                     borderRadius: 999,
                     transition: "width 0.4s ease",
                   }}
@@ -601,7 +611,7 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                   style={{
                     fontSize: 34,
                     fontWeight: 800,
-                    color: selected.lpg != null ? badgeStyles(getStatus(selected, thresholds).tone).text : "#94a3b8",
+                    color: selected.lpg != null ? badgeStyles(lpgGasStatus.tone).text : "#94a3b8",
                   }}
                 >
                   {selected.lpg != null ? Math.round(selected.lpg) : "N/A"}
@@ -621,7 +631,7 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                   style={{
                     width: `${lpgPct}%`,
                     height: "100%",
-                    background: selected.lpg != null ? badgeStyles(status.tone).text : "#e2e8f0",
+                    background: selected.lpg != null ? badgeStyles(lpgGasStatus.tone).text : "#e2e8f0",
                     borderRadius: 999,
                     transition: "width 0.4s ease",
                   }}

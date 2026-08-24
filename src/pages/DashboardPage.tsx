@@ -237,6 +237,21 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
     [`> ${thresholds.lpg.danger} ppm`, "Dangerous", "danger"],
   ];
 
+  // DHT22 reference guide — matches the ESP32 firmware's alarm thresholds
+  // (TEMP_ALARM_LOW_C/HIGH_C = 5/35, HUM_ALARM_LOW/HIGH = 20/80) so this
+  // card reflects what actually triggers the physical buzzer.
+  const tempGuide: [string, string, Tone][] = [
+    ["5\u00b0C - 35\u00b0C", "Safe", "success"],
+    ["< 5\u00b0C", "Too Cold", "danger"],
+    ["> 35\u00b0C", "Too Hot", "danger"],
+  ];
+
+  const humidityGuide: [string, string, Tone][] = [
+    ["20% - 80%", "Safe", "success"],
+    ["< 20%", "Too Dry", "danger"],
+    ["> 80%", "Too Humid", "danger"],
+  ];
+
   return (
     <div>
       <style>{`
@@ -798,6 +813,64 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
             >
               Lower explosive limit (LEL) is roughly 21,000 ppm (~2.1% by volume) - extreme danger.
             </div>
+          </div>
+
+          <div
+            style={{
+              background: "#fff",
+              border: "1px solid #eef1f4",
+              borderRadius: 12,
+              padding: 16,
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 10 }}>
+              TEMP & HUMIDITY REFERENCE GUIDE (DHT22)
+            </div>
+            {tempGuide.map(([range, label, tone]) => (
+              <div
+                key={range}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  fontSize: 12.5,
+                  padding: "5px 0",
+                }}
+              >
+                <span style={{ color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
+                  <ToneDot tone={tone} /> {range}
+                </span>
+                <span style={{ color: badgeStyles(tone).text, fontWeight: 700 }}>{label}</span>
+              </div>
+            ))}
+            <div
+              style={{
+                fontSize: 10.5,
+                color: "#94a3b8",
+                margin: "6px 0",
+                borderTop: "1px solid #f1f5f9",
+                paddingTop: 6,
+              }}
+            >
+              Humidity
+            </div>
+            {humidityGuide.map(([range, label, tone]) => (
+              <div
+                key={range}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  fontSize: 12.5,
+                  padding: "5px 0",
+                }}
+              >
+                <span style={{ color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
+                  <ToneDot tone={tone} /> {range}
+                </span>
+                <span style={{ color: badgeStyles(tone).text, fontWeight: 700 }}>{label}</span>
+              </div>
+            ))}
           </div>
         </div>
       </div>

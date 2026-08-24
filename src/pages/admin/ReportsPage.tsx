@@ -1,41 +1,71 @@
-import { Download } from "lucide-react";
+import { useEffect, useState, useCallback } from "react";
+import { Download, RefreshCw } from "lucide-react";
 import { Badge } from "../../ui";
-import { Room, Thresholds, getStatus } from "../../data/Data"
+import { Room, Thresholds } from "../../data/Data";
+import { supabase } from "../../lib/supabase";
 
 interface ReportsPageProps {
   rooms: Room[];
   thresholds: Thresholds;
 }
 
+// DHT22 danger thresholds - these are NOT part of the configurable
+// `Thresholds` type (Settings page only exposes co2/lpg), so they're
+// hardcoded here to match the ESP32 firmware's own alarm constants
+// (TEMP_ALARM_LOW_C / TEMP_ALARM_HIGH_C / HUM_ALARM_LOW / HUM_ALARM_HIGH
+// in air_mss_esp32.ino). If those firmware values ever change, update
+// these too so the report stays consistent with what actually triggers
+// the physical buzzer.
+const TEMP_DANGER_LOW_C = 5;
+const TEMP_DANGER_HIGH_C = 35;
+const HUM_DANGER_LOW = 20;
+const HUM_DANGER_HIGH = 80;
+
+// Shape of a row in the Supabase "readings" table (matches what the ESP32
+// sketch POSTs via sendReading(), plus Supabase's auto-generated columns).
+interface ReadingRow {
+  id: number;
+  device_id: string;
+  co2: number | null;
+  lpg: number | null;
+  temp: number | null;
+  humidity: number | null;
+  severity: number | null;
+  created_at: string;
+}
+
+interface DangerEvent extends ReadingRow {
+  roomName: string;
+  roomFloor: string;
+  triggeredBy: string[];
+}
+
 function escapeCSV(value: string) {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-function exportCSV(rooms: Room[], thresholds: Thresholds) {
+function exportCSV(events: DangerEvent[]) {
   const headers = [
+    "TIMESTAMP",
     "ROOM & FLOOR",
     "DEVICE ID",
-    "CURRENT CO2",
-    "ALERT COUNT",
-    "CURRENT LPG",
-    "CO2 LIMIT",
-    "LPG LIMIT",
-    "STATUS",
+    "CO2 (ppm)",
+    "LPG (ppm)",
+    "TEMP (C)",
+    "HUMIDITY (%)",
+    "TRIGGERED BY",
   ];
 
-  const rows = rooms.map((r) => {
-    const st = getStatus(r, thresholds);
-    return [
-      `${r.name} / ${r.floor}`,
-      r.id,
-      r.co2 != null ? `${Math.round(r.co2)} ppm` : "N/A",
-      r.alertCount.toString(),
-      r.lpg != null ? `${Math.round(r.lpg)} ppm` : "N/A (CO2 only)",
-      `${thresholds.co2.danger} ppm`,
-      `${thresholds.lpg.danger} ppm`,
-      st.label,
-    ];
-  });
+  const rows = events.map((e) => [
+    new Date(e.created_at).toLocaleString(),
+    `${e.roomName} / ${e.roomFloor}`,
+    e.device_id,
+    e.co2 != null ? Math.round(e.co2).toString() : "N/A",
+    e.lpg != null ? Math.round(e.lpg).toString() : "N/A",
+    e.temp != null ? e.temp.toFixed(1) : "N/A",
+    e.humidity != null ? Math.round(e.humidity).toString() : "N/A",
+    e.triggeredBy.join(", "),
+  ]);
 
   const csvContent = [headers, ...rows]
     .map((row) => row.map(escapeCSV).join(","))
@@ -45,38 +75,96 @@ function exportCSV(rooms: Room[], thresholds: Thresholds) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.setAttribute("download", "reports.csv");
+  link.setAttribute("download", "danger-events-report.csv");
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
 
-export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
-  const totalAlerts = rooms.reduce((sum, r) => sum + r.alertCount, 0);
-  const atRisk = rooms.filter((r) => getStatus(r, thresholds).severity >= 2).length;
+function getTriggeredBy(row: ReadingRow, thresholds: Thresholds): string[] {
+  const triggers: string[] = [];
+  if (row.co2 != null && row.co2 >= thresholds.co2.danger) triggers.push("CO2");
+  if (row.lpg != null && row.lpg >= thresholds.lpg.danger) triggers.push("LPG");
+  if (row.temp != null && (row.temp < TEMP_DANGER_LOW_C || row.temp > TEMP_DANGER_HIGH_C)) {
+    triggers.push("Temperature");
+  }
+  if (row.humidity != null && (row.humidity < HUM_DANGER_LOW || row.humidity > HUM_DANGER_HIGH)) {
+    triggers.push("Humidity");
+  }
+  return triggers;
+}
 
-  // Audit table + CSV export only surface rooms currently at Warning, High Gas,
-  // or Danger (severity >= 1) — this mirrors the Dashboard's live meter status
-  // since there's no real sensor hardware wired in yet. "Good" rooms are omitted
-  // from the log because this table is meant to read as an alert/event log.
-  const loggedRooms = rooms.filter((r) => getStatus(r, thresholds).severity >= 1);
+export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
+  const [events, setEvents] = useState<DangerEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchDangerEvents = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    // Query the recorded history in "readings" directly - NOT the live
+    // `rooms` state - and only rows where a reading actually crossed into
+    // danger at the time it was recorded. Using .or() pushes the filtering
+    // down to Postgres instead of pulling every historical row over the
+    // wire and filtering client-side.
+    const { data, error: fetchError } = await supabase
+      .from("readings")
+      .select("id, device_id, co2, lpg, temp, humidity, severity, created_at")
+      .or(
+        `co2.gte.${thresholds.co2.danger},` +
+          `lpg.gte.${thresholds.lpg.danger},` +
+          `temp.lt.${TEMP_DANGER_LOW_C},temp.gt.${TEMP_DANGER_HIGH_C},` +
+          `humidity.lt.${HUM_DANGER_LOW},humidity.gt.${HUM_DANGER_HIGH}`
+      )
+      .order("created_at", { ascending: false })
+      .limit(500);
+
+    if (fetchError) {
+      console.error("Failed to fetch danger events:", fetchError.message);
+      setError(fetchError.message);
+      setLoading(false);
+      return;
+    }
+
+    const mapped: DangerEvent[] = (data ?? []).map((row) => {
+      const r = row as ReadingRow;
+      const room = rooms.find((rm) => rm.id === r.device_id);
+      return {
+        ...r,
+        roomName: room?.name ?? r.device_id,
+        roomFloor: room?.floor ?? "-",
+        triggeredBy: getTriggeredBy(r, thresholds),
+      };
+    });
+
+    setEvents(mapped);
+    setLoading(false);
+  }, [rooms, thresholds]);
+
+  useEffect(() => {
+    fetchDangerEvents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thresholds.co2.danger, thresholds.lpg.danger]);
+
+  const affectedRoomCount = new Set(events.map((e) => e.device_id)).size;
 
   const summaryCards: { label: string; value: number; border: string }[] = [
     { label: "TOTAL DEVICES", value: rooms.length, border: "#0d9488" },
-    { label: "TOTAL ALERTS", value: totalAlerts, border: "#d97706" },
-    { label: "ROOMS AT RISK", value: atRisk, border: "#dc2626" },
+    { label: "TOTAL DANGER EVENTS", value: events.length, border: "#d97706" },
+    { label: "ROOMS AFFECTED", value: affectedRoomCount, border: "#dc2626" },
   ];
 
   const columns = [
+    "TIMESTAMP",
     "ROOM & FLOOR",
     "DEVICE ID",
-    "CURRENT CO2",
-    "ALERT COUNT",
-    "CURRENT LPG",
-    "CO2 LIMIT",
-    "LPG LIMIT",
-    "STATUS",
+    "CO2",
+    "LPG",
+    "TEMP",
+    "HUMIDITY",
+    "TRIGGERED BY",
   ];
 
   return (
@@ -87,6 +175,8 @@ export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
           justifyContent: "space-between",
           alignItems: "flex-start",
           marginBottom: 20,
+          flexWrap: "wrap",
+          gap: 12,
         }}
       >
         <div>
@@ -94,27 +184,52 @@ export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
             Environmental Quality Reports & Logs
           </h1>
           <p style={{ color: "#64748b", fontSize: 13.5, margin: "4px 0 0" }}>
-            Historical telemetry data and threshold event audit logs
+            Recorded danger-level events - CO2, LPG, temperature, or humidity readings that
+            crossed into the danger zone.
           </p>
         </div>
-        <button
-          onClick={() => exportCSV(loggedRooms, thresholds)}
-          style={{
-            background: "#0d9488",
-            color: "#fff",
-            border: "none",
-            borderRadius: 8,
-            padding: "10px 16px",
-            fontSize: 13,
-            fontWeight: 700,
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            cursor: "pointer",
-          }}
-        >
-          <Download size={15} /> Export CSV Report
-        </button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            onClick={fetchDangerEvents}
+            disabled={loading}
+            style={{
+              background: "#fff",
+              color: "#0d9488",
+              border: "1px solid #99f6e4",
+              borderRadius: 8,
+              padding: "10px 14px",
+              fontSize: 13,
+              fontWeight: 700,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: loading ? "not-allowed" : "pointer",
+              opacity: loading ? 0.6 : 1,
+            }}
+          >
+            <RefreshCw size={14} /> Refresh
+          </button>
+          <button
+            onClick={() => exportCSV(events)}
+            disabled={events.length === 0}
+            style={{
+              background: "#0d9488",
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              padding: "10px 16px",
+              fontSize: 13,
+              fontWeight: 700,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: events.length === 0 ? "not-allowed" : "pointer",
+              opacity: events.length === 0 ? 0.6 : 1,
+            }}
+          >
+            <Download size={15} /> Export CSV Report
+          </button>
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 20 }}>
@@ -157,17 +272,29 @@ export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
         >
           <div>
             <span style={{ fontWeight: 700, fontSize: 14.5, color: "#0f172a" }}>
-              Building Sensor Readings Audit Table
+              Danger Event Log
             </span>
             <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
-              Showing Warning, High Gas, and Danger readings only
+              Recorded readings where CO2, LPG, temperature, or humidity reached the danger
+              limit at the time - not current/live values.
             </div>
           </div>
-          <span style={{ fontSize: 12, color: "#94a3b8" }}>{loggedRooms.length} Active Rows</span>
+          <span style={{ fontSize: 12, color: "#94a3b8", whiteSpace: "nowrap" }}>
+            {events.length} Recorded Event{events.length === 1 ? "" : "s"}
+          </span>
         </div>
-        {loggedRooms.length === 0 ? (
+
+        {error ? (
+          <div style={{ padding: "24px 6px", fontSize: 13, color: "#dc2626", textAlign: "center" }}>
+            Failed to load danger events: {error}
+          </div>
+        ) : loading ? (
           <div style={{ padding: "24px 6px", fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
-            No rooms currently at Warning, High Gas, or Danger levels.
+            Loading recorded danger events...
+          </div>
+        ) : events.length === 0 ? (
+          <div style={{ padding: "24px 6px", fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
+            No recorded readings have reached danger level yet.
           </div>
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -189,46 +316,61 @@ export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
               </tr>
             </thead>
             <tbody>
-              {loggedRooms.map((r) => {
-                const st = getStatus(r, thresholds);
-                return (
-                  <tr key={r.id} style={{ borderBottom: "1px solid #f8fafc" }}>
-                    <td style={{ padding: "10px 6px" }}>
-                      <div style={{ fontWeight: 700, color: "#0f172a" }}>{r.name}</div>
-                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{r.floor}</div>
-                    </td>
-                    <td style={{ padding: "10px 6px", color: "#475569" }}>{r.id}</td>
-                    <td style={{ padding: "10px 6px", fontWeight: 700 }}>{r.co2 != null ? `${Math.round(r.co2)} ppm` : "N/A"}</td>
-                    <td style={{ padding: "10px 6px" }}>
-                      <span
-                        style={{
-                          background: r.alertCount > 0 ? "#FAEEDA" : "#f1f5f9",
-                          color: r.alertCount > 0 ? "#854F0B" : "#64748b",
-                          padding: "2px 8px",
-                          borderRadius: 6,
-                          fontWeight: 700,
-                        }}
-                      >
-                        {r.alertCount}
-                      </span>
-                    </td>
-                    <td
-                      style={{
-                        padding: "10px 6px",
-                        fontWeight: 700,
-                        color: r.lpg != null ? "#dc2626" : "#94a3b8",
-                      }}
-                    >
-                      {r.lpg != null ? `${Math.round(r.lpg)} ppm` : "N/A (CO2 only)"}
-                    </td>
-                    <td style={{ padding: "10px 6px", color: "#475569" }}>{thresholds.co2.danger} ppm</td>
-                    <td style={{ padding: "10px 6px", color: "#475569" }}>{thresholds.lpg.danger} ppm</td>
-                    <td style={{ padding: "10px 6px" }}>
-                      <Badge label={st.label} tone={st.tone} />
-                    </td>
-                  </tr>
-                );
-              })}
+              {events.map((e) => (
+                <tr key={e.id} style={{ borderBottom: "1px solid #f8fafc" }}>
+                  <td style={{ padding: "10px 6px", color: "#475569", whiteSpace: "nowrap" }}>
+                    {new Date(e.created_at).toLocaleString()}
+                  </td>
+                  <td style={{ padding: "10px 6px" }}>
+                    <div style={{ fontWeight: 700, color: "#0f172a" }}>{e.roomName}</div>
+                    <div style={{ fontSize: 11, color: "#94a3b8" }}>{e.roomFloor}</div>
+                  </td>
+                  <td style={{ padding: "10px 6px", color: "#475569" }}>{e.device_id}</td>
+                  <td
+                    style={{
+                      padding: "10px 6px",
+                      fontWeight: 700,
+                      color: e.triggeredBy.includes("CO2") ? "#dc2626" : "#475569",
+                    }}
+                  >
+                    {e.co2 != null ? `${Math.round(e.co2)} ppm` : "N/A"}
+                  </td>
+                  <td
+                    style={{
+                      padding: "10px 6px",
+                      fontWeight: 700,
+                      color: e.triggeredBy.includes("LPG") ? "#dc2626" : "#475569",
+                    }}
+                  >
+                    {e.lpg != null ? `${Math.round(e.lpg)} ppm` : "N/A"}
+                  </td>
+                  <td
+                    style={{
+                      padding: "10px 6px",
+                      fontWeight: 700,
+                      color: e.triggeredBy.includes("Temperature") ? "#dc2626" : "#475569",
+                    }}
+                  >
+                    {e.temp != null ? `${e.temp.toFixed(1)}\u00b0C` : "N/A"}
+                  </td>
+                  <td
+                    style={{
+                      padding: "10px 6px",
+                      fontWeight: 700,
+                      color: e.triggeredBy.includes("Humidity") ? "#dc2626" : "#475569",
+                    }}
+                  >
+                    {e.humidity != null ? `${Math.round(e.humidity)}%` : "N/A"}
+                  </td>
+                  <td style={{ padding: "10px 6px" }}>
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      {e.triggeredBy.map((t) => (
+                        <Badge key={t} label={t} tone="danger" />
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}

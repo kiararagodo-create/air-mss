@@ -33,7 +33,7 @@ const RoomsContext = createContext<RoomsContextValue | undefined>(undefined);
 // ---------- Supabase "rooms" row <-> Room mapping ----------
 // rooms table columns: id, name, floor, sensor (legacy combined field, kept
 // but unused), co2_sensor, gas_sensor, temp_humidity_sensor, length, width,
-// height, occupancy, co2, lpg, alert_count, last_seen, created_at,
+// height, co2, lpg, alert_count, last_seen, created_at,
 // installed_at, siren_muted. temp/humidity/online are NOT stored here - they
 // come live from the "readings" table below, keyed by device_id = room id.
 interface RoomRow {
@@ -46,7 +46,6 @@ interface RoomRow {
   length: number;
   width: number;
   height: number;
-  occupancy: number;
   co2: number | null;
   lpg: number | null;
   alert_count: number | null;
@@ -68,7 +67,6 @@ function rowToRoom(row: RoomRow): Room {
     length: row.length,
     width: row.width,
     height: row.height,
-    occupancy: row.occupancy,
     co2: row.co2,
     lpg: row.lpg,
     // Placeholder until the readings fetch/subscription below fills these
@@ -93,7 +91,6 @@ function roomToInsertRow(form: RoomForm) {
     length: Number(form.length ?? 6),
     width: Number(form.width ?? 4),
     height: Number(form.height ?? 3),
-    occupancy: Number(form.occupancy ?? 1),
     co2: form.co2 != null ? Number(form.co2) : null,
     lpg: form.lpg != null ? Number(form.lpg) : null,
     alert_count: 0,

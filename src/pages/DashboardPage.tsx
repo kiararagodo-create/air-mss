@@ -133,7 +133,6 @@ export interface Room {
   gasSensor?: SensorName | null;
   temp: number;
   humidity: number;
-  occupancy: number;
 }
 
 export interface Thresholds {

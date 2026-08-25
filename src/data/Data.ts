@@ -45,7 +45,6 @@ export interface Room {
   length: number;
   width: number;
   height: number;
-  occupancy: number;
   co2: number | null;
   lpg: number | null;
   temp: number;
@@ -280,7 +279,6 @@ export const INITIAL_ROOMS: Room[] = [
     length: 8,
     width: 6,
     height: 3,
-    occupancy: 30,
     co2: 490,
     lpg: null,
     temp: 27.5,
@@ -302,7 +300,6 @@ export const INITIAL_ROOMS: Room[] = [
     length: 6,
     width: 5,
     height: 3,
-    occupancy: 8,
     co2: 992,
     lpg: 510,
     temp: 30.2,
@@ -321,7 +318,6 @@ export const INITIAL_ROOMS: Room[] = [
     length: 10,
     width: 8,
     height: 3.2,
-    occupancy: 25,
     co2: 974,
     lpg: 333,
     temp: 28.8,
@@ -348,7 +344,6 @@ export const devices: IoTDevice[] = INITIAL_ROOMS.map((r) => ({
   length: r.length,
   width: r.width,
   height: r.height,
-  occupancy: r.occupancy,
   co2: r.co2,
   lpg: r.lpg,
   temp: r.temp,

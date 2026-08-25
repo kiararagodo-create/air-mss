@@ -74,7 +74,6 @@ function AddDeviceModal({
     length: "6",
     width: "4",
     height: "3",
-    occupancy: 1,
     co2Sensor: CO2_SENSOR_OPTIONS[0],
     gasSensor: GAS_SENSOR_OPTIONS[0],
     tempHumiditySensor: TEMP_HUMIDITY_SENSOR_OPTIONS[0],
@@ -550,8 +549,7 @@ export default function DevicesPage({
                 {r.sirenMuted && <Badge label="Siren Muted" tone="neutral" />}
               </div>
               <div style={{ fontSize: 11.5, color: "#94a3b8", marginBottom: 10 }}>
-                {r.length}m x {r.width}m x {r.height}m &middot; {volumeOf(r)} m3 &middot; {r.occupancy}{" "}
-                occupants
+                {r.length}m x {r.width}m x {r.height}m &middot; {volumeOf(r)} m3
               </div>
 
               <div style={{ background: "#f8fafc", borderRadius: 10, padding: 10, marginBottom: 12 }}>

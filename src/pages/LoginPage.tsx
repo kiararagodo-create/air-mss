@@ -12,8 +12,6 @@ import {
   KeyRound,
   ArrowLeft,
   CheckCircle2,
-  Thermometer,
-  Droplets,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
@@ -97,7 +95,6 @@ export default function LoginPage() {
           </div>
           <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">A.I.R.</h1>
           <p className="text-sm text-slate-500 mt-1">Real-time CO2, LPG, Temp & Humidity Monitoring</p>
-
         </div>
 
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">

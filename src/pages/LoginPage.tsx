@@ -96,20 +96,8 @@ export default function LoginPage() {
             <Wind className="w-7 h-7 text-white" strokeWidth={2.25} />
           </div>
           <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">A.I.R.</h1>
-          <p className="text-sm text-slate-500 mt-1">Real-time CO2 & LPG Monitoring</p>
+          <p className="text-sm text-slate-500 mt-1">Real-time CO2, LPG, Temp & Humidity Monitoring</p>
 
-          {/* Static placeholder readout - not wired to live data yet */}
-          <div className="flex items-center gap-4 mt-4 px-4 py-2 rounded-full bg-white border border-slate-200 shadow-sm">
-            <div className="flex items-center gap-1.5">
-              <Thermometer className="w-3.5 h-3.5 text-teal-600" />
-              <span className="text-xs font-medium text-slate-600">--°C</span>
-            </div>
-            <div className="w-px h-3.5 bg-slate-200" />
-            <div className="flex items-center gap-1.5">
-              <Droplets className="w-3.5 h-3.5 text-teal-600" />
-              <span className="text-xs font-medium text-slate-600">--% RH</span>
-            </div>
-          </div>
         </div>
 
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">

@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
-import { Wind, LayoutDashboard, Cpu, FileBarChart2, Settings, LogOut, Users, Menu, X } from "lucide-react";
+import { Wind, LayoutDashboard, Cpu, FileBarChart2, Settings, LogOut, Users, Menu, X, KeyRound } from "lucide-react";
 import type { UserRole } from "../types";
 import type { Profile } from "../context/AuthContext";
 import { getPermissions } from "../lib/permissions";
+import ChangePasswordModal from "./ChangePasswordModal";
 
 interface SidebarProps {
   role: UserRole;
@@ -21,6 +22,7 @@ const NAV_ITEMS = [
 
 export default function Sidebar({ role, profile, onSignOut }: SidebarProps) {
   const [open, setOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const permissions = getPermissions(role);
   const visibleNavItems = NAV_ITEMS.filter((item) => {
     if (item.requires === "reports") return permissions.canAccessReports;
@@ -123,7 +125,14 @@ export default function Sidebar({ role, profile, onSignOut }: SidebarProps) {
           ))}
         </nav>
 
-        <div className="p-3 border-t border-slate-100">
+        <div className="p-3 border-t border-slate-100 space-y-1">
+          <button
+            onClick={() => setChangePasswordOpen(true)}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition-colors"
+          >
+            <KeyRound className="w-4 h-4" />
+            Change Password
+          </button>
           <button
             onClick={onSignOut}
             className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-slate-500 hover:bg-red-50 hover:text-red-600 transition-colors"
@@ -133,6 +142,8 @@ export default function Sidebar({ role, profile, onSignOut }: SidebarProps) {
           </button>
         </div>
       </aside>
+
+      <ChangePasswordModal open={changePasswordOpen} onClose={() => setChangePasswordOpen(false)} />
     </>
   );
 }

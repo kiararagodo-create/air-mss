@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { UserPlus, Shield, Wrench, Ban, RotateCcw, Loader2, X, Pencil, Trash2 } from "lucide-react";
+import { UserPlus, Shield, Wrench, Crown, Ban, RotateCcw, Loader2, X, Pencil, Trash2 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 
 interface Personnel {
@@ -16,12 +16,20 @@ interface Personnel {
 }
 
 const ROLE_OPTIONS = [
+  { value: "admin", label: "Administrator" },
   { value: "security", label: "Security Personnel" },
   { value: "maintenance", label: "Maintenance Personnel" },
 ];
 
+function RoleIcon({ role }: { role: string }) {
+  if (role === "admin") return <Crown className="w-3 h-3" />;
+  if (role === "security") return <Shield className="w-3 h-3" />;
+  return <Wrench className="w-3 h-3" />;
+}
+
 export default function PersonnelManagementPage() {
   const [personnel, setPersonnel] = useState<Personnel[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -59,7 +67,7 @@ export default function PersonnelManagementPage() {
     const { data, error } = await supabase
       .from("profiles")
       .select("*")
-      .in("role", ["security", "maintenance"])
+      .in("role", ["admin", "security", "maintenance"])
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -72,7 +80,24 @@ export default function PersonnelManagementPage() {
 
   useEffect(() => {
     loadPersonnel();
+    supabase.auth.getUser().then(({ data }) => {
+      setCurrentUserId(data.user?.id ?? null);
+    });
   }, []);
+
+  // Active admins right now — used to block removing the last one.
+  const activeAdminCount = personnel.filter((p) => p.role === "admin" && p.is_active).length;
+
+  // Delete/Deactivate must stay blocked for: yourself, or the last remaining active admin.
+  function getLockReason(person: Personnel): string | null {
+    if (person.id === currentUserId) {
+      return "You can't remove your own admin access.";
+    }
+    if (person.role === "admin" && person.is_active && activeAdminCount <= 1) {
+      return "At least one active admin must remain.";
+    }
+    return null;
+  }
 
   async function handleAddPersonnel(e: FormEvent) {
     e.preventDefault();
@@ -241,7 +266,7 @@ export default function PersonnelManagementPage() {
         <div>
           <h1 className="text-xl font-semibold text-slate-900">Personnel Management</h1>
           <p className="text-sm text-slate-500 mt-1">
-            Manage security and maintenance staff access.
+            Manage admin, security, and maintenance staff access.
           </p>
         </div>
         <button
@@ -260,7 +285,7 @@ export default function PersonnelManagementPage() {
         </div>
       ) : personnel.length === 0 ? (
         <div className="text-center py-16 text-slate-400 text-sm">
-          No security or maintenance personnel added yet.
+          No admin, security, or maintenance personnel added yet.
         </div>
       ) : (
         <>
@@ -289,11 +314,7 @@ export default function PersonnelManagementPage() {
 
                 <div className="flex items-center gap-1.5 mb-3">
                   <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-md bg-slate-100 text-slate-700">
-                    {person.role === "security" ? (
-                      <Shield className="w-3 h-3" />
-                    ) : (
-                      <Wrench className="w-3 h-3" />
-                    )}
+                    <RoleIcon role={person.role} />
                     {person.role_label}
                   </span>
                 </div>
@@ -309,39 +330,55 @@ export default function PersonnelManagementPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
-                  <button
-                    onClick={() => openEditForm(person)}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => toggleActive(person)}
-                    disabled={togglingId === person.id}
-                    className={`flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border transition-colors disabled:opacity-50 ${
-                      person.is_active
-                        ? "border-red-200 text-red-600 hover:bg-red-50"
-                        : "border-teal-200 text-teal-700 hover:bg-teal-50"
-                    }`}
-                  >
-                    {togglingId === person.id ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : person.is_active ? (
-                      <Ban className="w-3.5 h-3.5" />
-                    ) : (
-                      <RotateCcw className="w-3.5 h-3.5" />
-                    )}
-                    {person.is_active ? "Deactivate" : "Reactivate"}
-                  </button>
-                  <button
-                    onClick={() => openDeleteConfirm(person)}
-                    className="inline-flex items-center justify-center w-8 h-8 shrink-0 rounded-lg border border-slate-200 text-slate-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                {(() => {
+                  const lockReason = getLockReason(person);
+                  // Only the Deactivate action is locked — Reactivate never reduces admin coverage.
+                  const deactivateLocked = person.is_active && !!lockReason;
+                  const deleteLocked = !!lockReason;
+                  return (
+                    <>
+                      {lockReason && (
+                        <p className="text-[11px] text-amber-600 mb-2">{lockReason}</p>
+                      )}
+                      <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                        <button
+                          onClick={() => openEditForm(person)}
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => toggleActive(person)}
+                          disabled={togglingId === person.id || deactivateLocked}
+                          title={deactivateLocked ? lockReason ?? undefined : undefined}
+                          className={`flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border transition-colors disabled:opacity-50 ${
+                            person.is_active
+                              ? "border-red-200 text-red-600 hover:bg-red-50"
+                              : "border-teal-200 text-teal-700 hover:bg-teal-50"
+                          }`}
+                        >
+                          {togglingId === person.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : person.is_active ? (
+                            <Ban className="w-3.5 h-3.5" />
+                          ) : (
+                            <RotateCcw className="w-3.5 h-3.5" />
+                          )}
+                          {person.is_active ? "Deactivate" : "Reactivate"}
+                        </button>
+                        <button
+                          onClick={() => openDeleteConfirm(person)}
+                          disabled={deleteLocked}
+                          title={deleteLocked ? lockReason ?? undefined : undefined}
+                          className="inline-flex items-center justify-center w-8 h-8 shrink-0 rounded-lg border border-slate-200 text-slate-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-slate-500 disabled:hover:border-slate-200"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             ))}
           </div>
@@ -367,11 +404,7 @@ export default function PersonnelManagementPage() {
                     <td className="px-4 py-3 text-slate-500">{person.email}</td>
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-md bg-slate-100 text-slate-700">
-                        {person.role === "security" ? (
-                          <Shield className="w-3 h-3" />
-                        ) : (
-                          <Wrench className="w-3 h-3" />
-                        )}
+                        <RoleIcon role={person.role} />
                         {person.role_label}
                       </span>
                     </td>
@@ -389,40 +422,54 @@ export default function PersonnelManagementPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          onClick={() => openEditForm(person)}
-                          title="Edit"
-                          className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition-colors"
-                        >
-                          <Pencil className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => toggleActive(person)}
-                          disabled={togglingId === person.id}
-                          title={person.is_active ? "Deactivate" : "Reactivate"}
-                          className={`inline-flex items-center justify-center w-8 h-8 rounded-lg border transition-colors disabled:opacity-50 ${
-                            person.is_active
-                              ? "border-red-200 text-red-600 hover:bg-red-50"
-                              : "border-teal-200 text-teal-700 hover:bg-teal-50"
-                          }`}
-                        >
-                          {togglingId === person.id ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : person.is_active ? (
-                            <Ban className="w-3.5 h-3.5" />
-                          ) : (
-                            <RotateCcw className="w-3.5 h-3.5" />
-                          )}
-                        </button>
-                        <button
-                          onClick={() => openDeleteConfirm(person)}
-                          title="Delete"
-                          className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-200 text-slate-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                      {(() => {
+                        const lockReason = getLockReason(person);
+                        const deactivateLocked = person.is_active && !!lockReason;
+                        const deleteLocked = !!lockReason;
+                        return (
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              onClick={() => openEditForm(person)}
+                              title="Edit"
+                              className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition-colors"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => toggleActive(person)}
+                              disabled={togglingId === person.id || deactivateLocked}
+                              title={
+                                deactivateLocked
+                                  ? lockReason ?? undefined
+                                  : person.is_active
+                                  ? "Deactivate"
+                                  : "Reactivate"
+                              }
+                              className={`inline-flex items-center justify-center w-8 h-8 rounded-lg border transition-colors disabled:opacity-50 ${
+                                person.is_active
+                                  ? "border-red-200 text-red-600 hover:bg-red-50"
+                                  : "border-teal-200 text-teal-700 hover:bg-teal-50"
+                              }`}
+                            >
+                              {togglingId === person.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : person.is_active ? (
+                                <Ban className="w-3.5 h-3.5" />
+                              ) : (
+                                <RotateCcw className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                            <button
+                              onClick={() => openDeleteConfirm(person)}
+                              disabled={deleteLocked}
+                              title={deleteLocked ? lockReason ?? undefined : "Delete"}
+                              className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-200 text-slate-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-slate-500 disabled:hover:border-slate-200"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}

@@ -139,7 +139,7 @@ export default function LoginPage() {
                       onClick={switchToForgot}
                       className="text-xs font-medium text-teal-600 hover:text-teal-700"
                     >
-                      Forgot password?
+                   
                     </button>
                   </div>
                   <div className="relative">

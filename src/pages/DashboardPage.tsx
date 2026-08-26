@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Bell, CheckCircle2, Droplets, Thermometer, X } from "lucide-react";
+import DangerAlarmBanner from "../components/DangerAlarmBanner";
 
 // Lightweight local replacements for ./ui to avoid missing-module errors.
 // Kept minimal — styling inline to match expected usage in this file.
@@ -191,7 +192,6 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
   const status = getStatus(selected, thresholds);
 
   const safeRooms = rooms.filter((r) => getStatus(r, thresholds).severity === 0);
-  // ...the rest of your original function continues unchanged from he
   const warningHighRooms = rooms.filter((r) => {
     const s = getStatus(r, thresholds).severity;
     return s === 1 || s === 2;
@@ -236,10 +236,15 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
   const co2GasStatus = getGasStatus(selected.co2, thresholds.co2);
   const lpgGasStatus = getGasStatus(selected.lpg, thresholds.lpg);
 
+  // CO2 reference guide — collapsed to 3 tiers (Safe / Warning / Danger) to
+  // match the ESP32 firmware, which only has two meaningful cutoffs:
+  // CO2_SOFT_PPM (thresholds.co2.warning, logged only) and CO2_URGENT_PPM
+  // (thresholds.co2.danger, sounds the physical buzzer). The old separate
+  // "High Gas" band is folded into "Warning" since the firmware doesn't
+  // treat it as a distinct tier.
   const co2Guide: [string, string, Tone][] = [
     [`< ${thresholds.co2.warning} ppm`, "Safe / Good", "success"],
-    [`${thresholds.co2.warning} - ${thresholds.co2.high} ppm`, "Warning", "warning"],
-    [`${thresholds.co2.high} - ${thresholds.co2.danger} ppm`, "High Gas", "high"],
+    [`${thresholds.co2.warning} - ${thresholds.co2.danger} ppm`, "Warning", "warning"],
     [`> ${thresholds.co2.danger} ppm`, "Danger", "danger"],
   ];
 
@@ -330,6 +335,8 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
       <p style={{ color: "#64748b", fontSize: 13.5, margin: "4px 0 20px" }}>
         Real-time CO2 & LPG telemetry across Asian College premises
       </p>
+
+      <DangerAlarmBanner isDanger={dangerRooms.length > 0} />
 
       <div className="air-summary-grid">
         {summaryCards.map((c) => {
@@ -779,7 +786,8 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                 paddingTop: 6,
               }}
             >
-              &gt;5000 ppm approaches the OSHA occupational exposure limit - immediate evacuation.
+              &gt;{thresholds.co2.danger} ppm triggers the physical alarm. (OSHA's 8-hour occupational
+              exposure limit is 5000 ppm — this threshold is set lower for earlier warning.)
             </div>
           </div>
 

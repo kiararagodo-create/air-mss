@@ -88,8 +88,14 @@ export interface SensorInfo {
 // Default safety thresholds. Admins can override these from the Settings page.
 //
 // CO2 (MH-Z19C): 1000 ppm = start paying attention (ASHRAE indoor-air-quality
-// guidance re: poor ventilation/drowsiness), 2000 ppm = alarm, 5000 ppm =
-// OSHA 8-hour occupational exposure ceiling (critical).
+// guidance re: poor ventilation/drowsiness). 'high' and 'danger' are both set
+// to 3500 ppm, matching the ESP32 firmware's CO2_URGENT_PPM (the level at
+// which the physical buzzer actually fires) - collapsing the old 4-tier
+// severity scale (warning/high/danger) into 3 effective tiers (Safe /
+// Warning / Danger) so the dashboard's CO2 Reference Guide and alarm state
+// line up with what the hardware does. 5000 ppm (OSHA 8-hour occupational
+// exposure ceiling) is no longer used as a tier boundary here, but is still
+// referenced in the UI copy for context.
 //
 // LPG (MQ-6): thresholds are set relative to the Lower Explosive Limit (LEL),
 // not a health exposure limit, since the real danger here is combustion.
@@ -106,7 +112,7 @@ export interface SensorInfo {
 // 0-100% RH with ±0.5°C / ±2% RH accuracy, so these thresholds sit well
 // within that range.
 export const DEFAULT_THRESHOLDS: Thresholds = {
-  co2: { warning: 1000, high: 2000, danger: 5000 },
+  co2: { warning: 1000, high: 3500, danger: 3500 },
   lpg: { warning: 1000, high: 2000, danger: 5000 },
   temp: { freezeBelow: 5, coolBelow: 18, heatAbove: 35 },
   humidity: { dryBelow: 20, lowBelow: 30, moldAbove: 80 },

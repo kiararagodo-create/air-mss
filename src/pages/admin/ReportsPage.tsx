@@ -1,5 +1,14 @@
 import { useEffect, useState, useCallback } from "react";
-import { Download, RefreshCw } from "lucide-react";
+import {
+  Building2,
+  ChevronDown,
+  Download,
+  RefreshCw,
+  Smartphone,
+  AlertTriangle,
+  Users,
+  FileWarning,
+} from "lucide-react";
 import { Badge } from "../../ui";
 import { Room, Thresholds } from "../../data/Data";
 import { supabase } from "../../lib/supabase";
@@ -95,10 +104,27 @@ function getTriggeredBy(row: ReadingRow, thresholds: Thresholds): string[] {
   return triggers;
 }
 
+// Groups the full room list by floor, preserving the order rooms already
+// come in via the `rooms` prop. Unlike grouping by event, this always
+// includes every room/floor - even ones with zero recorded danger events -
+// so the report reads as a status board, not just a log of incidents.
+function groupRoomsByFloor(rooms: Room[]) {
+  const floors = new Map<string, Room[]>();
+  for (const room of rooms) {
+    if (!floors.has(room.floor)) floors.set(room.floor, []);
+    floors.get(room.floor)!.push(room);
+  }
+  return floors;
+}
+
+const eventColumns = ["TIMESTAMP", "CO2", "LPG", "TEMP", "HUMIDITY", "TRIGGERED BY"];
+
 export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
   const [events, setEvents] = useState<DangerEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [closedFloors, setClosedFloors] = useState<Set<string>>(new Set());
+  const [openRoomKey, setOpenRoomKey] = useState<string | null>(null);
 
   const fetchDangerEvents = useCallback(async () => {
     setLoading(true);
@@ -148,27 +174,170 @@ export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [thresholds.co2.danger, thresholds.lpg.danger]);
 
+  // Lookup: device_id -> its events, so each room can pull just its own
+  // slice out of the single combined query above.
+  const eventsByDevice = new Map<string, DangerEvent[]>();
+  for (const e of events) {
+    if (!eventsByDevice.has(e.device_id)) eventsByDevice.set(e.device_id, []);
+    eventsByDevice.get(e.device_id)!.push(e);
+  }
+
   const affectedRoomCount = new Set(events.map((e) => e.device_id)).size;
 
-  const summaryCards: { label: string; value: number; border: string }[] = [
-    { label: "TOTAL DEVICES", value: rooms.length, border: "#0d9488" },
-    { label: "TOTAL DANGER EVENTS", value: events.length, border: "#d97706" },
-    { label: "ROOMS AFFECTED", value: affectedRoomCount, border: "#dc2626" },
+  const summaryCards: { label: string; value: number; border: string; icon: JSX.Element }[] = [
+    {
+      label: "TOTAL DEVICES",
+      value: rooms.length,
+      border: "#0d9488",
+      icon: <Smartphone size={18} color="#0d9488" />,
+    },
+    {
+      label: "TOTAL DANGER EVENTS",
+      value: events.length,
+      border: "#d97706",
+      icon: <AlertTriangle size={18} color="#d97706" />,
+    },
+    {
+      label: "ROOMS AFFECTED",
+      value: affectedRoomCount,
+      border: "#dc2626",
+      icon: <Users size={18} color="#dc2626" />,
+    },
   ];
 
-  const columns = [
-    "TIMESTAMP",
-    "ROOM & FLOOR",
-    "DEVICE ID",
-    "CO2",
-    "LPG",
-    "TEMP",
-    "HUMIDITY",
-    "TRIGGERED BY",
-  ];
+  const floorGroups = groupRoomsByFloor(rooms);
+
+  const toggleFloor = (floor: string) => {
+    setClosedFloors((prev) => {
+      const next = new Set(prev);
+      if (next.has(floor)) next.delete(floor);
+      else next.add(floor);
+      return next;
+    });
+  };
+
+  const toggleRoom = (key: string) => {
+    setOpenRoomKey((prev) => (prev === key ? null : key));
+  };
 
   return (
     <div>
+      <style>{`
+        .air-floor-card {
+          background: #fff;
+          border: 1px solid #eef1f4;
+          border-radius: 12px;
+          margin-bottom: 12px;
+          overflow: hidden;
+        }
+        .air-floor-header {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 14px 16px;
+          background: #fff;
+          border: none;
+          cursor: pointer;
+          text-align: left;
+        }
+        .air-floor-icon {
+          width: 32px;
+          height: 32px;
+          border-radius: 999px;
+          background: #0d9488;
+          color: #fff;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .air-floor-count {
+          font-size: 11.5px;
+          font-weight: 700;
+          color: #0d9488;
+          background: #f0fdfa;
+          border: 1px solid #99f6e4;
+          padding: 3px 10px;
+          border-radius: 999px;
+        }
+        .air-floor-body {
+          padding: 0 16px 16px;
+        }
+        .air-room-item {
+          border: 1px solid #eef1f4;
+          border-radius: 10px;
+          margin-bottom: 10px;
+          overflow: hidden;
+        }
+        .air-room-item:last-child {
+          margin-bottom: 0;
+        }
+        .air-room-header {
+          width: 100%;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          padding: 12px 14px;
+          background: #fff;
+          border: none;
+          cursor: pointer;
+          text-align: left;
+          flex-wrap: wrap;
+        }
+        .air-room-icon {
+          width: 26px;
+          height: 26px;
+          border-radius: 999px;
+          border: 1.5px solid #99f6e4;
+          color: #0d9488;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .air-room-id-pill {
+          font-size: 11px;
+          font-weight: 700;
+          color: #475569;
+          background: #f1f5f9;
+          padding: 3px 9px;
+          border-radius: 6px;
+          flex-shrink: 0;
+        }
+        .air-room-status-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 999px;
+          flex-shrink: 0;
+        }
+        .air-room-body {
+          padding: 14px;
+          border-top: 1px solid #eef1f4;
+          background: #fafbfc;
+          overflow-x: auto;
+        }
+        .air-empty-state {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 32px 12px;
+          text-align: center;
+        }
+        .air-empty-icon {
+          width: 44px;
+          height: 44px;
+          border-radius: 999px;
+          background: #f0fdfa;
+          color: #0d9488;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin-bottom: 12px;
+        }
+      `}</style>
       <div
         style={{
           display: "flex",
@@ -242,139 +411,260 @@ export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
               borderLeft: `4px solid ${c.border}`,
               borderRadius: 12,
               padding: "14px 16px",
+              display: "flex",
+              alignItems: "center",
+              gap: 14,
             }}
           >
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: 0.5 }}>
-              {c.label}
+            <div
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: 999,
+                background: `${c.border}1a`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              {c.icon}
             </div>
-            <div style={{ fontSize: 26, fontWeight: 800, color: "#0f172a", marginTop: 4 }}>
-              {c.value}
+            <div>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: 0.5 }}>
+                {c.label}
+              </div>
+              <div style={{ fontSize: 26, fontWeight: 800, color: "#0f172a", marginTop: 2 }}>
+                {c.value}
+              </div>
             </div>
           </div>
         ))}
       </div>
 
-      <div
-        style={{
-          background: "#fff",
-          border: "1px solid #eef1f4",
-          borderRadius: 12,
-          padding: 16,
-          overflowX: "auto",
-        }}
-      >
+      {error ? (
         <div
           style={{
-            display: "flex",
-            justifyContent: "space-between",
-            marginBottom: 12,
+            background: "#fff",
+            border: "1px solid #eef1f4",
+            borderRadius: 12,
+            padding: "24px 6px",
+            fontSize: 13,
+            color: "#dc2626",
+            textAlign: "center",
           }}
         >
-          <div>
-            <span style={{ fontWeight: 700, fontSize: 14.5, color: "#0f172a" }}>
-              Danger Event Log
-            </span>
-            <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
-              Recorded readings where CO2, LPG, temperature, or humidity reached the danger
-              limit at the time - not current/live values.
-            </div>
-          </div>
-          <span style={{ fontSize: 12, color: "#94a3b8", whiteSpace: "nowrap" }}>
-            {events.length} Recorded Event{events.length === 1 ? "" : "s"}
-          </span>
+          Failed to load danger events: {error}
         </div>
+      ) : loading ? (
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #eef1f4",
+            borderRadius: 12,
+            padding: "24px 6px",
+            fontSize: 13,
+            color: "#94a3b8",
+            textAlign: "center",
+          }}
+        >
+          Loading recorded danger events...
+        </div>
+      ) : rooms.length === 0 ? (
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #eef1f4",
+            borderRadius: 12,
+            padding: "24px 6px",
+            fontSize: 13,
+            color: "#94a3b8",
+            textAlign: "center",
+          }}
+        >
+          No devices/rooms have been added yet.
+        </div>
+      ) : (
+        Array.from(floorGroups.entries()).map(([floor, floorRooms]) => {
+          const floorOpen = !closedFloors.has(floor);
+          return (
+            <div key={floor} className="air-floor-card">
+              <button type="button" className="air-floor-header" onClick={() => toggleFloor(floor)}>
+                <span className="air-floor-icon">
+                  <Building2 size={16} />
+                </span>
+                <span style={{ fontWeight: 800, fontSize: 15, color: "#0f172a", letterSpacing: 0.3 }}>
+                  {floor}
+                </span>
+                <span className="air-floor-count">
+                  {floorRooms.length} room{floorRooms.length === 1 ? "" : "s"}
+                </span>
+                <span style={{ marginLeft: "auto", flexShrink: 0, display: "flex" }}>
+                  <ChevronDown
+                    size={18}
+                    color="#0f172a"
+                    style={{
+                      transform: floorOpen ? "rotate(180deg)" : "rotate(0deg)",
+                      transition: "transform 0.15s ease",
+                    }}
+                  />
+                </span>
+              </button>
 
-        {error ? (
-          <div style={{ padding: "24px 6px", fontSize: 13, color: "#dc2626", textAlign: "center" }}>
-            Failed to load danger events: {error}
-          </div>
-        ) : loading ? (
-          <div style={{ padding: "24px 6px", fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
-            Loading recorded danger events...
-          </div>
-        ) : events.length === 0 ? (
-          <div style={{ padding: "24px 6px", fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
-            No recorded readings have reached danger level yet.
-          </div>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead>
-              <tr style={{ textAlign: "left", color: "#94a3b8", fontSize: 11 }}>
-                {columns.map((h) => (
-                  <th
-                    key={h}
-                    style={{
-                      padding: "8px 6px",
-                      fontWeight: 700,
-                      borderBottom: "1px solid #f1f5f9",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {events.map((e) => (
-                <tr key={e.id} style={{ borderBottom: "1px solid #f8fafc" }}>
-                  <td style={{ padding: "10px 6px", color: "#475569", whiteSpace: "nowrap" }}>
-                    {new Date(e.created_at).toLocaleString()}
-                  </td>
-                  <td style={{ padding: "10px 6px" }}>
-                    <div style={{ fontWeight: 700, color: "#0f172a" }}>{e.roomName}</div>
-                    <div style={{ fontSize: 11, color: "#94a3b8" }}>{e.roomFloor}</div>
-                  </td>
-                  <td style={{ padding: "10px 6px", color: "#475569" }}>{e.device_id}</td>
-                  <td
-                    style={{
-                      padding: "10px 6px",
-                      fontWeight: 700,
-                      color: e.triggeredBy.includes("CO2") ? "#dc2626" : "#475569",
-                    }}
-                  >
-                    {e.co2 != null ? `${Math.round(e.co2)} ppm` : "N/A"}
-                  </td>
-                  <td
-                    style={{
-                      padding: "10px 6px",
-                      fontWeight: 700,
-                      color: e.triggeredBy.includes("LPG") ? "#dc2626" : "#475569",
-                    }}
-                  >
-                    {e.lpg != null ? `${Math.round(e.lpg)} ppm` : "N/A"}
-                  </td>
-                  <td
-                    style={{
-                      padding: "10px 6px",
-                      fontWeight: 700,
-                      color: e.triggeredBy.includes("Temperature") ? "#dc2626" : "#475569",
-                    }}
-                  >
-                    {e.temp != null ? `${e.temp.toFixed(1)}\u00b0C` : "N/A"}
-                  </td>
-                  <td
-                    style={{
-                      padding: "10px 6px",
-                      fontWeight: 700,
-                      color: e.triggeredBy.includes("Humidity") ? "#dc2626" : "#475569",
-                    }}
-                  >
-                    {e.humidity != null ? `${Math.round(e.humidity)}%` : "N/A"}
-                  </td>
-                  <td style={{ padding: "10px 6px" }}>
-                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                      {e.triggeredBy.map((t) => (
-                        <Badge key={t} label={t} tone="danger" />
-                      ))}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+              {floorOpen && (
+                <div className="air-floor-body">
+                  {floorRooms.map((room) => {
+                    const roomEvents = eventsByDevice.get(room.id) ?? [];
+                    const roomKey = `${floor}::${room.id}`;
+                    const isOpen = openRoomKey === roomKey;
+                    const hasDanger = roomEvents.length > 0;
+
+                    return (
+                      <div key={roomKey} className="air-room-item">
+                        <button type="button" className="air-room-header" onClick={() => toggleRoom(roomKey)}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", minWidth: 0 }}>
+                            <span className="air-room-icon">
+                              <Smartphone size={13} />
+                            </span>
+                            <span style={{ fontWeight: 800, fontSize: 14.5, color: "#0f172a" }}>{room.name}</span>
+                            <span className="air-room-id-pill">{room.id}</span>
+                            <span
+                              className="air-room-status-dot"
+                              style={{ background: hasDanger ? "#dc2626" : "#16a34a" }}
+                            />
+                            <span style={{ fontSize: 12.5, color: "#475569", fontWeight: 600, whiteSpace: "nowrap" }}>
+                              {roomEvents.length} danger event{roomEvents.length === 1 ? "" : "s"}
+                            </span>
+                          </div>
+                          <ChevronDown
+                            size={16}
+                            color="#94a3b8"
+                            style={{
+                              flexShrink: 0,
+                              transform: isOpen ? "rotate(180deg)" : "rotate(0deg)",
+                              transition: "transform 0.15s ease",
+                            }}
+                          />
+                        </button>
+
+                        {isOpen && (
+                          <div className="air-room-body">
+                            <div
+                              style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                marginBottom: 10,
+                                flexWrap: "wrap",
+                                gap: 8,
+                              }}
+                            >
+                              <div>
+                                <span style={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
+                                  Danger Event Log
+                                </span>
+                                <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2, maxWidth: 460 }}>
+                                  Recorded readings where CO2, LPG, temperature, or humidity reached the
+                                  danger limit at the time - not current/live values.
+                                </div>
+                              </div>
+                              <span style={{ fontSize: 12, color: "#94a3b8", whiteSpace: "nowrap" }}>
+                                {roomEvents.length} Recorded Event{roomEvents.length === 1 ? "" : "s"}
+                              </span>
+                            </div>
+
+                            {roomEvents.length === 0 ? (
+                              <div className="air-empty-state">
+                                <span className="air-empty-icon">
+                                  <FileWarning size={20} />
+                                </span>
+                                <span style={{ fontSize: 13, color: "#94a3b8" }}>
+                                  No recorded readings have reached danger level yet.
+                                </span>
+                              </div>
+                            ) : (
+                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                                <thead>
+                                  <tr style={{ textAlign: "left", color: "#94a3b8", fontSize: 11 }}>
+                                    {eventColumns.map((h) => (
+                                      <th
+                                        key={h}
+                                        style={{
+                                          padding: "8px 6px",
+                                          fontWeight: 700,
+                                          borderBottom: "1px solid #f1f5f9",
+                                          whiteSpace: "nowrap",
+                                        }}
+                                      >
+                                        {h}
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {roomEvents.map((e) => (
+                                    <tr key={e.id} style={{ borderBottom: "1px solid #f8fafc" }}>
+                                      <td style={{ padding: "10px 6px", color: "#475569", whiteSpace: "nowrap" }}>
+                                        {new Date(e.created_at).toLocaleString()}
+                                      </td>
+                                      <td
+                                        style={{
+                                          padding: "10px 6px",
+                                          fontWeight: 700,
+                                          color: e.triggeredBy.includes("CO2") ? "#dc2626" : "#475569",
+                                        }}
+                                      >
+                                        {e.co2 != null ? `${Math.round(e.co2)} ppm` : "N/A"}
+                                      </td>
+                                      <td
+                                        style={{
+                                          padding: "10px 6px",
+                                          fontWeight: 700,
+                                          color: e.triggeredBy.includes("LPG") ? "#dc2626" : "#475569",
+                                        }}
+                                      >
+                                        {e.lpg != null ? `${Math.round(e.lpg)} ppm` : "N/A"}
+                                      </td>
+                                      <td
+                                        style={{
+                                          padding: "10px 6px",
+                                          fontWeight: 700,
+                                          color: e.triggeredBy.includes("Temperature") ? "#dc2626" : "#475569",
+                                        }}
+                                      >
+                                        {e.temp != null ? `${e.temp.toFixed(1)}\u00b0C` : "N/A"}
+                                      </td>
+                                      <td
+                                        style={{
+                                          padding: "10px 6px",
+                                          fontWeight: 700,
+                                          color: e.triggeredBy.includes("Humidity") ? "#dc2626" : "#475569",
+                                        }}
+                                      >
+                                        {e.humidity != null ? `${Math.round(e.humidity)}%` : "N/A"}
+                                      </td>
+                                      <td style={{ padding: "10px 6px" }}>
+                                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                                          {e.triggeredBy.map((t) => (
+                                            <Badge key={t} label={t} tone="danger" />
+                                          ))}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }

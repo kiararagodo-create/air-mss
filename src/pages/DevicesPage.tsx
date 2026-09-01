@@ -1,7 +1,16 @@
 import { useState } from "react";
-import { Info, Plus, Trash2, Volume2, VolumeX } from "lucide-react";
-import { Room, SensorInfo, Thresholds, getStatus, volumeOf, SENSOR_INFO } from "../data/Data";
-import { Badge, badgeStyles } from "../ui";
+import {
+  Activity,
+  Box,
+  Building2,
+  ChevronDown,
+  Plus,
+  Trash2,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
+import { Room, Thresholds, getStatus, volumeOf } from "../data/Data";
+import { Badge } from "../ui";
 
 type User = {
   id: string;
@@ -358,9 +367,31 @@ export default function DevicesPage({
 }: DevicesPageProps) {
   const [showAdd, setShowAdd] = useState(false);
   const [roomToRemove, setRoomToRemove] = useState<Room | null>(null);
+  const [closedFloors, setClosedFloors] = useState<Set<string>>(new Set());
+  const [openRoomId, setOpenRoomId] = useState<string | null>(null);
   const canManage = user.role === "admin";
 
   const allMuted = rooms.length > 0 && rooms.every((r) => r.sirenMuted);
+
+  // Group rooms by floor, preserving FLOOR_OPTIONS order first, then any
+  // custom floor names present in the data that aren't in that list.
+  const floorOrder = Array.from(new Set([...FLOOR_OPTIONS, ...rooms.map((r) => r.floor)]));
+  const roomsByFloor = floorOrder
+    .map((floor) => ({ floor, floorRooms: rooms.filter((r) => r.floor === floor) }))
+    .filter((f) => f.floorRooms.length > 0);
+
+  const toggleFloor = (floor: string) => {
+    setClosedFloors((prev) => {
+      const next = new Set(prev);
+      if (next.has(floor)) next.delete(floor);
+      else next.add(floor);
+      return next;
+    });
+  };
+
+  const toggleRoom = (id: string) => {
+    setOpenRoomId((prev) => (prev === id ? null : id));
+  };
 
   return (
     <div>
@@ -370,16 +401,93 @@ export default function DevicesPage({
           grid-template-columns: 1fr 1fr;
           gap: 12px;
         }
-        .air-device-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
-          gap: 16px;
-          margin-bottom: 28px;
+        .air-floor-card {
+          background: #fff;
+          border: 1px solid #eef1f4;
+          border-radius: 12px;
+          margin-bottom: 16px;
+          overflow: hidden;
         }
-        .air-sensorinfo-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-          gap: 16px;
+        .air-floor-header {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 16px;
+          background: #fff;
+          border: none;
+          cursor: pointer;
+          text-align: left;
+        }
+        .air-floor-icon {
+          width: 36px;
+          height: 36px;
+          border-radius: 999px;
+          background: #0d9488;
+          color: #fff;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .air-floor-count {
+          font-size: 11.5;
+          font-weight: 700;
+          color: #475569;
+          background: #f1f5f9;
+          padding: 3px 10px;
+          border-radius: 999px;
+        }
+        .air-floor-body {
+          padding: 0 16px 16px;
+        }
+        .air-room-item {
+          border: 1px solid #eef1f4;
+          border-radius: 10px;
+          margin-bottom: 10px;
+          overflow: hidden;
+        }
+        .air-room-item:last-child {
+          margin-bottom: 0;
+        }
+        .air-room-header {
+          width: 100%;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          padding: 12px 14px;
+          background: #fff;
+          border: none;
+          cursor: pointer;
+          text-align: left;
+          flex-wrap: wrap;
+        }
+        .air-room-id-pill {
+          font-size: 11px;
+          font-weight: 700;
+          color: #475569;
+          background: #f1f5f9;
+          padding: 3px 9px;
+          border-radius: 6px;
+          flex-shrink: 0;
+        }
+        .air-room-body {
+          padding: 14px;
+          border-top: 3px solid #0d9488;
+          background: #fafffe;
+        }
+        .air-room-body-grid {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 20px;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .air-readings-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 24px;
         }
         @media (max-width: 420px) {
           .air-modal-grid {
@@ -428,7 +536,7 @@ export default function DevicesPage({
         )}
       </div>
 
-            {showAdd && (
+      {showAdd && (
         <AddDeviceModal
           onClose={() => setShowAdd(false)}
           onSubmit={async (form: RoomForm) => {
@@ -459,12 +567,13 @@ export default function DevicesPage({
             gap: 10,
             background: "#fff",
             border: "1px solid #eef1f4",
+            borderLeft: "4px solid #0d9488",
             borderRadius: 12,
             padding: "12px 16px",
-            marginBottom: 16,
+            marginBottom: 20,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             {allMuted ? <VolumeX size={16} color="#64748b" /> : <Volume2 size={16} color="#0d9488" />}
             <span style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
               Siren Control &mdash; all devices
@@ -498,201 +607,196 @@ export default function DevicesPage({
         </div>
       )}
 
-      <div className="air-device-grid">
-        {rooms.map((r) => {
-          const st = getStatus(r, thresholds);
-          const borderColor = badgeStyles(st.tone).text;
+      {roomsByFloor.length === 0 ? (
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #eef1f4",
+            borderRadius: 12,
+            padding: "60px 20px",
+            textAlign: "center",
+          }}
+        >
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a", marginBottom: 6 }}>
+            No devices registered yet
+          </div>
+          <div style={{ fontSize: 13, color: "#64748b" }}>
+            Use "Add New IoT Device" to register your first sensor node.
+          </div>
+        </div>
+      ) : (
+        roomsByFloor.map(({ floor, floorRooms }) => {
+          const floorOpen = !closedFloors.has(floor);
           return (
-            <div
-              key={r.id}
-              style={{
-                background: "#fff",
-                border: "1px solid #eef1f4",
-                borderLeft: `4px solid ${borderColor}`,
-                borderRadius: 12,
-                padding: 16,
-                minWidth: 0,
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    color: "#94a3b8",
-                    letterSpacing: 0.5,
-                  }}
-                >
-                  {r.floor.toUpperCase()}
+            <div key={floor} className="air-floor-card">
+              <button type="button" className="air-floor-header" onClick={() => toggleFloor(floor)}>
+                <span className="air-floor-icon">
+                  <Building2 size={18} />
                 </span>
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 700,
-                    color: "#475569",
-                    background: "#f1f5f9",
-                    padding: "2px 8px",
-                    borderRadius: 6,
-                  }}
-                >
-                  {r.id}
+                <span style={{ fontWeight: 800, fontSize: 16, color: "#0f172a", letterSpacing: 0.3 }}>
+                  {floor.toUpperCase()}
                 </span>
-              </div>
-              <div style={{ fontSize: 17, fontWeight: 800, color: "#0f172a", margin: "4px 0 8px" }}>
-                {r.name}
-              </div>
-              <div style={{ marginBottom: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <Badge label={`CO2: ${r.co2Sensor}`} tone="success" />
-                {r.gasSensor && <Badge label={`Gas: ${r.gasSensor}`} tone="success" />}
-                {r.tempHumiditySensor && <Badge label={`T/H: ${r.tempHumiditySensor}`} tone="success" />}
-                <Badge label={st.label} tone={st.tone} />
-                {r.sirenMuted && <Badge label="Siren Muted" tone="neutral" />}
-              </div>
-              <div style={{ fontSize: 11.5, color: "#94a3b8", marginBottom: 10 }}>
-                {r.length}m x {r.width}m x {r.height}m &middot; {volumeOf(r)} m3
-              </div>
+                <span className="air-floor-count">
+                  {floorRooms.length} room{floorRooms.length === 1 ? "" : "s"}
+                </span>
+                <span style={{ marginLeft: "auto", flexShrink: 0, display: "flex" }}>
+                  <ChevronDown
+                    size={18}
+                    color="#0f172a"
+                    style={{
+                      transform: floorOpen ? "rotate(180deg)" : "rotate(0deg)",
+                      transition: "transform 0.15s ease",
+                    }}
+                  />
+                </span>
+              </button>
 
-              <div style={{ background: "#f8fafc", borderRadius: 10, padding: 10, marginBottom: 12 }}>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    fontSize: 12.5,
-                    marginBottom: 6,
-                  }}
-                >
-                  <span style={{ color: "#64748b" }}>CO2 Reading:</span>
-                  <span style={{ fontWeight: 700 }}>{r.co2 != null ? `${Math.round(r.co2)} ppm` : "N/A"}</span>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }}>
-                  <span style={{ color: "#64748b" }}>LPG Gas Reading:</span>
-                  <span
-                    style={{
-                      fontWeight: 700,
-                      color: r.lpg != null ? badgeStyles(st.tone).text : "#94a3b8",
-                    }}
-                  >
-                    {r.lpg != null ? `${Math.round(r.lpg)} ppm` : "N/A (no gas sensor)"}
-                  </span>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }}>
-                  <span style={{ color: "#64748b" }}>Temp / Humidity:</span>
-                  <span style={{ fontWeight: 700 }}>
-                    {r.tempHumiditySensor
-                      ? `${r.temp.toFixed(1)}\u00b0C / ${Math.round(r.humidity)}%`
-                      : "N/A (no sensor)"}
-                  </span>
-                </div>
-              </div>
+              {floorOpen && (
+                <div className="air-floor-body">
+                  {floorRooms.map((room) => {
+                    const st = getStatus(room, thresholds);
+                    const isOpen = openRoomId === room.id;
+                    return (
+                      <div
+                        key={room.id}
+                        className="air-room-item"
+                        style={{ borderColor: isOpen ? "#0d9488" : "#eef1f4" }}
+                      >
+                        <button type="button" className="air-room-header" onClick={() => toggleRoom(room.id)}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", minWidth: 0 }}>
+                            <ChevronDown
+                              size={16}
+                              color="#94a3b8"
+                              style={{
+                                flexShrink: 0,
+                                transform: isOpen ? "rotate(180deg)" : "rotate(-90deg)",
+                                transition: "transform 0.15s ease",
+                              }}
+                            />
+                            <span style={{ fontWeight: 800, fontSize: 15, color: "#0f172a" }}>{room.name}</span>
+                            <span className="air-room-id-pill">{room.id}</span>
+                            <Badge label={`CO2: ${room.co2Sensor}`} tone="success" />
+                            {room.gasSensor && <Badge label={`Gas: ${room.gasSensor}`} tone="success" />}
+                            {room.tempHumiditySensor && <Badge label={`T/H: ${room.tempHumiditySensor}`} tone="success" />}
+                            <Badge label={st.label} tone={st.tone} />
+                            {room.sirenMuted && <Badge label="Siren Muted" tone="neutral" />}
+                          </div>
+                          {!isOpen && (
+                            <Badge
+                              label={room.online ? "Online" : "Offline"}
+                              tone={room.online ? "success" : "neutral"}
+                            />
+                          )}
+                        </button>
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                <Badge label={r.online ? "Online" : "Offline"} tone={r.online ? "success" : "neutral"} />
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button
-                    onClick={() => canManage && toggleSiren(r.id)}
-                    disabled={!canManage}
-                    type="button"
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      border: r.sirenMuted ? "1px solid #e2e8f0" : "1px solid #99f6e4",
-                      background: r.sirenMuted ? "#f8fafc" : "#fff",
-                      color: r.sirenMuted ? "#475569" : "#0d9488",
-                      borderRadius: 6,
-                      padding: "6px 10px",
-                      cursor: canManage ? "pointer" : "not-allowed",
-                      opacity: canManage ? 1 : 0.5,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4,
-                    }}
-                  >
-                    {r.sirenMuted ? <VolumeX size={12} /> : <Volume2 size={12} />}
-                    {r.sirenMuted ? "Muted" : "Siren On"}
-                  </button>
-                  <button
-                    onClick={() => canManage && setRoomToRemove(r)}
-                    disabled={!canManage}
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      border: "1px solid #fecaca",
-                      background: "#fff",
-                      color: "#dc2626",
-                      borderRadius: 6,
-                      padding: "6px 10px",
-                      cursor: canManage ? "pointer" : "not-allowed",
-                      opacity: canManage ? 1 : 0.5,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4,
-                    }}
-                  >
-                    <Trash2 size={12} /> Remove
-                  </button>
+                        {isOpen && (
+                          <div className="air-room-body">
+                            <div className="air-room-body-grid">
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <Box size={16} color="#0d9488" />
+                                <div>
+                                  <div style={{ fontSize: 11, color: "#64748b" }}>Room Size</div>
+                                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#0f172a" }}>
+                                    {room.length}m x {room.width}m x {room.height}m: {volumeOf(room)} m3
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="air-readings-row">
+                                <div>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b" }}>
+                                    <Activity size={13} /> Current Readings
+                                  </div>
+                                </div>
+                                <div>
+                                  <div style={{ fontSize: 11, color: "#64748b" }}>CO2 Reading</div>
+                                  <div style={{ fontSize: 17, fontWeight: 800, color: "#0d9488" }}>
+                                    {room.co2 != null ? `${Math.round(room.co2)} ppm` : "N/A"}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div style={{ fontSize: 11, color: "#64748b" }}>LPG Gas Reading</div>
+                                  <div
+                                    style={{
+                                      fontSize: 17,
+                                      fontWeight: 800,
+                                      color: room.lpg != null ? "#0d9488" : "#94a3b8",
+                                    }}
+                                  >
+                                    {room.lpg != null ? `${Math.round(room.lpg)} ppm` : "N/A"}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div style={{ fontSize: 11, color: "#64748b" }}>Temp / Humidity</div>
+                                  <div style={{ fontSize: 17, fontWeight: 800, color: "#0d9488" }}>
+                                    {room.tempHumiditySensor
+                                      ? `${room.temp.toFixed(1)}\u00b0C / ${Math.round(room.humidity)}%`
+                                      : "N/A"}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                <Badge
+                                  label={room.online ? "Online" : "Offline"}
+                                  tone={room.online ? "success" : "neutral"}
+                                />
+                                <button
+                                  onClick={() => canManage && toggleSiren(room.id)}
+                                  disabled={!canManage}
+                                  type="button"
+                                  style={{
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    border: room.sirenMuted ? "1px solid #e2e8f0" : "1px solid #99f6e4",
+                                    background: room.sirenMuted ? "#f8fafc" : "#fff",
+                                    color: room.sirenMuted ? "#475569" : "#0d9488",
+                                    borderRadius: 6,
+                                    padding: "6px 10px",
+                                    cursor: canManage ? "pointer" : "not-allowed",
+                                    opacity: canManage ? 1 : 0.5,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                  }}
+                                >
+                                  {room.sirenMuted ? <VolumeX size={12} /> : <Volume2 size={12} />}
+                                  {room.sirenMuted ? "Muted" : "Siren On"}
+                                </button>
+                                <button
+                                  onClick={() => canManage && setRoomToRemove(room)}
+                                  disabled={!canManage}
+                                  type="button"
+                                  style={{
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    border: "1px solid #fecaca",
+                                    background: "#fff",
+                                    color: "#dc2626",
+                                    borderRadius: 6,
+                                    padding: "6px 10px",
+                                    cursor: canManage ? "pointer" : "not-allowed",
+                                    opacity: canManage ? 1 : 0.5,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                  }}
+                                >
+                                  <Trash2 size={12} /> Remove
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
+              )}
             </div>
           );
-        })}
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12 }}>
-        <Info size={15} color="#0d9488" />
-        <span style={{ fontWeight: 700, fontSize: 14.5, color: "#0f172a" }}>
-          Hardware Sensor Technical Reference
-        </span>
-      </div>
-      <div className="air-sensorinfo-grid">
-        {SENSOR_INFO.map((s: SensorInfo) => (
-          <div
-            key={s.id}
-            style={{
-              background: "#fff",
-              border: "1px solid #eef1f4",
-              borderRadius: 12,
-              padding: 16,
-              minWidth: 0,
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>{s.title}</span>
-              <Badge label={s.id} tone="success" />
-            </div>
-            <p style={{ fontSize: 12.5, color: "#64748b", lineHeight: 1.6, margin: "8px 0" }}>
-              {s.body}
-            </p>
-            <div style={{ fontSize: 12, color: "#334155", marginBottom: 4 }}>
-              <b>Gases Monitored:</b> {s.gases}
-            </div>
-            <div style={{ fontSize: 12, color: "#334155", marginBottom: 4 }}>
-              <b>Sensing Range:</b> {s.range}
-            </div>
-            <div style={{ fontSize: 12, color: "#334155", marginBottom: 10 }}>
-              <b>Accuracy Rating:</b> {s.accuracy}
-            </div>
-            <div
-              style={{
-                fontSize: 10.5,
-                fontWeight: 700,
-                color: "#94a3b8",
-                letterSpacing: 0.5,
-                marginBottom: 6,
-              }}
-            >
-              KEY SPECIFICATIONS
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
-              {s.specs.map((sp: string) => (
-                <div key={sp} style={{ fontSize: 12, color: "#334155", display: "flex", gap: 6 }}>
-                  <span style={{ color: "#0d9488" }}>&bull;</span>
-                  {sp}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
+        })
+      )}
     </div>
   );
 }

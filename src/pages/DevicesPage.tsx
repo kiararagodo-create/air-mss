@@ -349,7 +349,7 @@ function RemoveDeviceModal({
 interface DevicesPageProps {
   rooms: Room[];
   removeRoom: (id: string) => void;
-  addRoom: (form: RoomForm) => Promise<void>;
+  addRoom: (form: RoomForm) => Promise<{ error: string | null }>;
   user: User;
   thresholds: Thresholds;
   toggleSiren: (id: string) => Promise<void>;
@@ -366,6 +366,7 @@ export default function DevicesPage({
   muteAll,
 }: DevicesPageProps) {
   const [showAdd, setShowAdd] = useState(false);
+  const [addError, setAddError] = useState("");
   const [roomToRemove, setRoomToRemove] = useState<Room | null>(null);
   const [closedFloors, setClosedFloors] = useState<Set<string>>(new Set());
   const [openRoomId, setOpenRoomId] = useState<string | null>(null);
@@ -539,11 +540,53 @@ export default function DevicesPage({
       {showAdd && (
         <AddDeviceModal
           onClose={() => setShowAdd(false)}
-          onSubmit={async (form: RoomForm) => {
-            await addRoom(form);
+          onSubmit={async (form: any) => {
+            const result = await addRoom(form as any);
+            if (result?.error) {
+              setAddError(result.error);
+              return;
+            }
             setShowAdd(false);
           }}
         />
+      )}
+      {addError && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 24,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "#fef2f2",
+            border: "1px solid #fca5a5",
+            color: "#dc2626",
+            borderRadius: 10,
+            padding: "12px 20px",
+            fontSize: 13.5,
+            fontWeight: 600,
+            zIndex: 100,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+            maxWidth: 400,
+            textAlign: "center",
+          }}
+        >
+          {addError}
+          <button
+            onClick={() => setAddError("")}
+            style={{
+              marginLeft: 12,
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              color: "#dc2626",
+              fontWeight: 800,
+              fontSize: 16,
+              lineHeight: 1,
+            }}
+          >
+            x
+          </button>
+        </div>
       )}
 
       {roomToRemove && (

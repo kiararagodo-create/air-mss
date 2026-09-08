@@ -23,7 +23,7 @@ interface RoomsContextValue {
   setSettings: (s: AppSettings) => void;
   toggleOnline: (id: string) => void;
   removeRoom: (id: string) => Promise<void>;
-  addRoom: (form: RoomForm) => Promise<void>;
+  addRoom: (form: RoomForm) => Promise<{ error: string | null }>;
   toggleSiren: (id: string) => Promise<void>;
   muteAll: (muted: boolean) => Promise<void>;
 }
@@ -324,7 +324,7 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
     const insertRow = roomToInsertRow(form);
     if (!insertRow.id) {
       console.error("Cannot add room: Device ID is required.");
-      return;
+      return { error: "Device ID is required." };
     }
     const { data, error } = await supabase
       .from("rooms")
@@ -333,12 +333,17 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
       .single();
 
     if (error) {
+      const msg = error.message.toLowerCase();
+      if (msg.includes("duplicate") || msg.includes("unique") || msg.includes("already exists")) {
+        return { error: `Device ID "${insertRow.id}" is already registered. Choose a different ID.` };
+      }
       console.error("Failed to add room:", error.message);
-      return;
+      return { error: error.message };
     }
     if (data) {
       setRooms((prev) => [...prev, rowToRoom(data as RoomRow)]);
     }
+    return { error: null };
   }, []);
 
   // Flip a single device's siren_muted flag. Writes to Supabase first so the

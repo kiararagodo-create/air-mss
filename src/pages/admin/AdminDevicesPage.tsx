@@ -93,7 +93,7 @@ interface DevicesPageProps {
   rooms: Room[];
   toggleOnline: (id: string) => void;
   removeRoom: (id: string) => void;
-  addRoom: (form: RoomForm) => void;
+  addRoom: (form: RoomForm) => Promise<{ error: string | null }>;
   user: User;
   thresholds: Thresholds;
 }

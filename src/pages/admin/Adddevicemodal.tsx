@@ -1,8 +1,11 @@
 import { useState, type CSSProperties } from "react";
 import { Ruler, X } from "lucide-react";
 
-// Local RoomForm type (was imported from AdminDashboard which may not exist in this scope)
+// Local RoomForm type. The `id` field is the Device ID entered by the user
+// (e.g. AIR-D01) — this is the value the ESP32 sends as its device_id, and
+// it maps directly to rooms.id in the database. The two must match.
 type RoomForm = {
+  id: string;
   name: string;
   floor: string;
   gasSensor: string;
@@ -19,6 +22,7 @@ interface AddDeviceModalProps {
 
 export default function AddDeviceModal({ onClose, onSubmit }: AddDeviceModalProps) {
   const [form, setForm] = useState<RoomForm>({
+    id: "",
     name: "",
     floor: "",
     gasSensor: "MQ-6",
@@ -27,15 +31,23 @@ export default function AddDeviceModal({ onClose, onSubmit }: AddDeviceModalProp
     height: 3,
     occupancy: 20,
   });
+  const [idError, setIdError] = useState("");
 
   function update<K extends keyof RoomForm>(field: K, value: RoomForm[K]) {
-    setForm({ ...form, [field]: value });
+    setForm((prev) => ({ ...prev, [field]: value }));
+    if (field === "id") setIdError("");
   }
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
+    setIdError("");
+    const trimmedId = form.id.trim();
+    if (!trimmedId) {
+      setIdError("Device ID is required.");
+      return;
+    }
     if (!form.name.trim() || !form.floor.trim()) return;
-    onSubmit(form);
+    onSubmit({ ...form, id: trimmedId });
   }
 
   const field: CSSProperties = {
@@ -124,6 +136,27 @@ export default function AddDeviceModal({ onClose, onSubmit }: AddDeviceModalProp
           </div>
         </div>
 
+        <div style={{ marginBottom: 10 }}>
+          <label style={label}>DEVICE ID</label>
+          <input
+            style={{
+              ...field,
+              borderColor: idError ? "#ef4444" : undefined,
+              textTransform: "uppercase",
+            }}
+            value={form.id}
+            onChange={(e) => update("id", e.target.value.toUpperCase())}
+            placeholder="e.g. AIR-D01"
+            autoComplete="off"
+          />
+          {idError && (
+            <div style={{ color: "#ef4444", fontSize: 11.5, marginTop: 3 }}>{idError}</div>
+          )}
+          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 3 }}>
+            Must match the DEVICE_ID in your ESP32 firmware. Case-insensitive.
+          </div>
+        </div>
+
         <label style={label}>CO2 MODULE (always installed)</label>
         <div style={{ ...field, background: "#f8fafc", color: "#64748b" }}>
           MH-Z19C (NDIR CO2 sensor)
@@ -200,17 +233,18 @@ export default function AddDeviceModal({ onClose, onSubmit }: AddDeviceModalProp
 
         <button
           type="submit"
+          disabled={!form.id.trim() || !form.name.trim() || !form.floor.trim()}
           style={{
             width: "100%",
             marginTop: 16,
-            background: "#0d9488",
+            background: !form.id.trim() || !form.name.trim() || !form.floor.trim() ? "#94a3b8" : "#0d9488",
             color: "#fff",
             border: "none",
             borderRadius: 8,
             padding: "11px 0",
             fontSize: 13.5,
             fontWeight: 700,
-            cursor: "pointer",
+            cursor: !form.id.trim() || !form.name.trim() || !form.floor.trim() ? "not-allowed" : "pointer",
           }}
         >
           Add device

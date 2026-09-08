@@ -24,24 +24,6 @@ interface DSRow {
   humidity_avg: number | null;
 }
 
-interface ReportRow {
-  id: number;
-  device_id: string;
-  report_start: string;
-  report_end: string;
-  pdf_path: string | null;
-  reading_count: number;
-  generation_status: "pending" | "generating" | "succeeded" | "failed";
-  readings_deleted: boolean;
-  dominant_status: string | null;
-  data_coverage_pct: number | null;
-  generated_at: string | null;
-  co2_avg: number | null;
-  lpg_avg: number | null;
-  temp_avg: number | null;
-  humidity_avg: number | null;
-}
-
 type RangeKey = "1h" | "24h" | "7d";
 
 // Timezone used for all period labels and tick text. Single source of
@@ -86,9 +68,6 @@ export default function DeviceHistoryReports({ room }: Props) {
   const [windowStart, setWindowStart] = useState<Date>(new Date());
   const [windowEnd, setWindowEnd] = useState<Date>(new Date());
 
-  const [reports, setReports] = useState<ReportRow[]>([]);
-  const [reportsLoading, setReportsLoading] = useState(false);
-
   // -------- History fetch --------
   const fetchHistory = useCallback(async () => {
     setLoading(true); setError(null);
@@ -124,22 +103,6 @@ export default function DeviceHistoryReports({ room }: Props) {
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [room.id, fetchHistory]);
-
-  // -------- Archived reports list --------
-  const fetchReports = useCallback(async () => {
-    setReportsLoading(true);
-    const { data, error: e } = await supabase
-      .from("sensor_reports")
-      .select("id, device_id, report_start, report_end, pdf_path, reading_count, generation_status, readings_deleted, dominant_status, data_coverage_pct, generated_at, co2_avg, lpg_avg, temp_avg, humidity_avg")
-      .eq("device_id", room.id)
-      .order("report_end", { ascending: false })
-      .limit(20);
-    if (e) { console.error("Failed to load archived reports:", e.message); }
-    setReports((data ?? []) as ReportRow[]);
-    setReportsLoading(false);
-  }, [room.id]);
-
-  useEffect(() => { fetchReports(); }, [fetchReports]);
 
   const label = periodLabel(range, windowStart, windowEnd);
 
@@ -189,50 +152,6 @@ export default function DeviceHistoryReports({ room }: Props) {
           <MiniChart metric="humidity" data={series.map((r) => [r.bucket_start, r.humidity_avg] as const)} range={range} windowStart={windowStart} windowEnd={windowEnd} />
         </div>
       )}
-
-      {/* ---------- Archived Reports ---------- */}
-      <div style={{ marginTop: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <span style={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>Archived Reports (permanent PDF copies)</span>
-          <button type="button" onClick={fetchReports} style={{ fontSize: 12, color: "#0d9488", background: "transparent", border: "none", cursor: "pointer", fontWeight: 700 }}>
-            Refresh
-          </button>
-        </div>
-        <div style={{ fontSize: 11, color: "#64748b", marginBottom: 8 }}>
-          PDFs survive even after raw readings have been cleared.
-        </div>
-
-        {reportsLoading ? (
-          <div style={{ fontSize: 12, color: "#94a3b8", padding: "8px 0" }}>Loading archived reports...</div>
-        ) : reports.length === 0 ? (
-          <div style={{ fontSize: 12, color: "#94a3b8", padding: "8px 0" }}>
-            No archived reports for {room.name} yet. Weekly reports are generated automatically every Monday.
-          </div>
-        ) : (
-          <div style={{ border: "1px solid #eef1f4", borderRadius: 8, overflow: "hidden" }}>
-            {reports.map((r) => (
-              <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderBottom: "1px solid #f1f5f9", flexWrap: "wrap", gap: 8 }}>
-                <div style={{ display: "flex", flexDirection: "column" }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
-                    {new Date(r.report_start).toLocaleDateString("en-PH", { month: "long", day: "numeric", year: "numeric" })}
-                    {" - "}
-                    {new Date(new Date(r.report_end).getTime() - 1).toLocaleDateString("en-PH", { month: "long", day: "numeric", year: "numeric" })}
-                  </span>
-                  <span style={{ fontSize: 11, color: "#94a3b8" }}>
-                    {r.reading_count} readings - {r.dominant_status ?? "N/A"} - coverage {r.data_coverage_pct?.toFixed(1) ?? "?"}%
-                    {r.readings_deleted ? " - raw data cleared" : " - raw data retained"}
-                  </span>
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <span style={{ fontSize: 12, color: "#94a3b8" }}>
-                    {r.generation_status === "succeeded" ? "PDF available in Storage" : r.generation_status ?? "pending"}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

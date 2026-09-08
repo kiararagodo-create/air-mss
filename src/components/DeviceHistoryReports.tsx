@@ -141,25 +141,6 @@ export default function DeviceHistoryReports({ room }: Props) {
 
   useEffect(() => { fetchReports(); }, [fetchReports]);
 
-  const downloadReport = useCallback(async (r: ReportRow) => {
-    if (!r.pdf_path) return;
-    const { data, error: e } = await supabase.storage.from("sensor-reports").download(r.pdf_path);
-    if (e || !data) { alert(`Could not download: ${e?.message ?? "no data"}`); return; }
-    const url = URL.createObjectURL(data);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = r.pdf_path.split("/").pop() ?? "report.pdf";
-    document.body.appendChild(a); a.click();
-    document.body.removeChild(a); URL.revokeObjectURL(url);
-  }, []);
-
-  const viewReport = useCallback(async (r: ReportRow) => {
-    if (!r.pdf_path) return;
-    const { data } = await supabase.storage.from("sensor-reports").createSignedUrl(r.pdf_path, 60);
-    if (data?.signedUrl) window.open(data.signedUrl, "_blank");
-    else alert("Could not generate a view link.");
-  }, []);
-
   const label = periodLabel(range, windowStart, windowEnd);
 
   return (
@@ -243,12 +224,9 @@ export default function DeviceHistoryReports({ room }: Props) {
                   </span>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
-                  <button type="button" onClick={() => viewReport(r)} disabled={r.generation_status !== "succeeded"} style={{ fontSize: 12, fontWeight: 700, padding: "6px 10px", borderRadius: 6, border: "1px solid #99f6e4", background: "#fff", color: "#0d9488", cursor: r.generation_status === "succeeded" ? "pointer" : "not-allowed", opacity: r.generation_status === "succeeded" ? 1 : 0.5 }}>
-                    View
-                  </button>
-                  <button type="button" onClick={() => downloadReport(r)} disabled={r.generation_status !== "succeeded"} style={{ fontSize: 12, fontWeight: 700, padding: "6px 10px", borderRadius: 6, border: "none", background: "#0d9488", color: "#fff", cursor: r.generation_status === "succeeded" ? "pointer" : "not-allowed", opacity: r.generation_status === "succeeded" ? 1 : 0.5 }}>
-                    Download
-                  </button>
+                  <span style={{ fontSize: 12, color: "#94a3b8" }}>
+                    {r.generation_status === "succeeded" ? "PDF available in Storage" : r.generation_status ?? "pending"}
+                  </span>
                 </div>
               </div>
             ))}

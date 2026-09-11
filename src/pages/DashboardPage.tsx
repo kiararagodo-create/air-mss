@@ -381,15 +381,17 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
   ];
 
   const tempGuide: [string, string, Tone][] = [
-    ["5\u00b0C - 35\u00b0C", "Safe", "success"],
-    ["< 5\u00b0C", "Too Cold", "danger"],
-    ["> 35\u00b0C", "Too Hot", "danger"],
+    [`< ${thresholds.temp.freezeBelow}°C`, "Too Cold", "danger"],
+    [`${thresholds.temp.freezeBelow}°C - ${thresholds.temp.coolBelow}°C`, "Cool", "warning"],
+    [`${thresholds.temp.coolBelow}°C - ${thresholds.temp.heatAbove}°C`, "Comfortable", "success"],
+    [`> ${thresholds.temp.heatAbove}°C`, "Too Hot", "danger"],
   ];
 
   const humidityGuide: [string, string, Tone][] = [
-    ["20% - 80%", "Safe", "success"],
-    ["< 20%", "Too Dry", "danger"],
-    ["> 80%", "Too Humid", "danger"],
+    [`< ${thresholds.humidity.dryBelow}%`, "Too Dry", "danger"],
+    [`${thresholds.humidity.dryBelow}% - ${thresholds.humidity.lowBelow}%`, "Dry", "warning"],
+    [`${thresholds.humidity.lowBelow}% - ${thresholds.humidity.moldAbove}%`, "Comfortable", "success"],
+    [`> ${thresholds.humidity.moldAbove}%`, "Too Humid", "danger"],
   ];
 
   return (

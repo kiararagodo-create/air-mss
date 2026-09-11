@@ -151,6 +151,8 @@ export interface Room {
 export interface Thresholds {
   co2: { warning: number; high: number; danger: number };
   lpg: { warning: number; high: number; danger: number };
+  temp: { freezeBelow: number; coolBelow: number; heatAbove: number };
+  humidity: { dryBelow: number; lowBelow: number; moldAbove: number };
 }
 
 type Tone = "success" | "warning" | "high" | "danger" | "neutral";

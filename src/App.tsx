@@ -75,7 +75,7 @@ const ROLE_INFO: Record<string, { name: string; roleLabel: string; department: s
 };
 
 function SettingsRoute() {
-  const { thresholds, setThresholds, settings, setSettings } = useRooms();
+  const { thresholds, setThresholds, setSettings } = useRooms();
   const { user: authUser, role } = useAuth();
   const info = ROLE_INFO[role ?? ""] ?? {
     name: role ?? "User",
@@ -93,7 +93,6 @@ function SettingsRoute() {
   };
   return (
     <SettingsPage
-      settings={settings}
       setSettings={setSettings}
       thresholds={thresholds}
       setThresholds={(nextThresholds) =>

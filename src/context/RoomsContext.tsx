@@ -6,11 +6,9 @@ import { supabase } from "../lib/supabase";
 // Matches DevicesPage.tsx's RoomForm = Partial<Room> & { submitLabel?: string }
 type RoomForm = Partial<Room> & { submitLabel?: string };
 
-export interface AppSettings {
-  emailAlerts: boolean;
-}
+export interface AppSettings {}
 
-const DEFAULT_SETTINGS: AppSettings = { emailAlerts: true };
+const DEFAULT_SETTINGS: AppSettings = {};
 
 interface RoomsContextValue {
   rooms: Room[];
@@ -124,6 +122,72 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
   const [thresholds, setThresholds] = useState<Thresholds>(DEFAULT_THRESHOLDS);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
 
+  // ---------- Persistent safety thresholds (Supabase "platform_thresholds") ----------
+  // The Settings page lets admins adjust CO2 / LPG / DHT22 temp / DHT22
+  // humidity tiers. These used to live only in React state and reset to
+  // DEFAULT_THRESHOLDS on every reload - now they're backed by a single
+  // canonical row in the platform_thresholds table so they survive across
+  // sessions and tabs.
+
+  function rowToThresholds(row: {
+    co2_warning: number; co2_high: number; co2_danger: number;
+    lpg_warning: number; lpg_high: number; lpg_danger: number;
+    temp_freeze_below: number; temp_cool_below: number; temp_heat_above: number;
+    humidity_dry_below: number; humidity_low_below: number; humidity_mold_above: number;
+  }): Thresholds {
+    return {
+      co2: { warning: row.co2_warning, high: row.co2_high, danger: row.co2_danger },
+      lpg: { warning: row.lpg_warning, high: row.lpg_high, danger: row.lpg_danger },
+      temp: { freezeBelow: row.temp_freeze_below, coolBelow: row.temp_cool_below, heatAbove: row.temp_heat_above },
+      humidity: { dryBelow: row.humidity_dry_below, lowBelow: row.humidity_low_below, moldAbove: row.humidity_mold_above },
+    };
+  }
+
+  async function loadThresholds(): Promise<Thresholds> {
+    const { data, error } = await supabase
+      .from("platform_thresholds")
+      .select("*")
+      .eq("id", 1)
+      .maybeSingle();
+    if (error) {
+      console.error("Failed to load platform thresholds:", error.message);
+      return DEFAULT_THRESHOLDS;
+    }
+    if (!data) return DEFAULT_THRESHOLDS;
+    return rowToThresholds(data as any);
+  }
+
+  async function persistThresholds(next: Thresholds): Promise<void> {
+    const row = {
+      id: 1,
+      co2_warning: next.co2.warning,
+      co2_high: next.co2.high,
+      co2_danger: next.co2.danger,
+      lpg_warning: next.lpg.warning,
+      lpg_high: next.lpg.high,
+      lpg_danger: next.lpg.danger,
+      temp_freeze_below: next.temp.freezeBelow,
+      temp_cool_below: next.temp.coolBelow,
+      temp_heat_above: next.temp.heatAbove,
+      humidity_dry_below: next.humidity.dryBelow,
+      humidity_low_below: next.humidity.lowBelow,
+      humidity_mold_above: next.humidity.moldAbove,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await supabase
+      .from("platform_thresholds")
+      .upsert(row, { onConflict: "id" });
+    if (error) {
+      console.error("Failed to persist platform thresholds:", error.message);
+    }
+  }
+
+  // Override setThresholds so every update is also written back to the DB.
+  const setThresholdsPersist = useCallback((next: Thresholds) => {
+    setThresholds(next);
+    persistThresholds(next);
+  }, []);
+
   // ---------- Room registry (Supabase "rooms" table) ----------
 
   const refreshRooms = useCallback(async () => {
@@ -141,6 +205,8 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
+      const loaded = await loadThresholds();
+      setThresholds(loaded);
       await refreshRooms();
       setLoading(false);
     })();
@@ -191,6 +257,27 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
       supabase.removeChannel(channel);
     };
   }, []);
+
+  // Realtime: keep the global platform thresholds in sync across tabs.
+  // If an admin adjusts the safety tiers from another session, the
+  // dashboard and reports pages pick the change up without a reload.
+  useEffect(() => {
+    const channel = supabase
+      .channel("platform-thresholds-live")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "platform_thresholds" },
+        async () => {
+          const loaded = await loadThresholds();
+          setThresholds(loaded);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [loadThresholds]);
 
   // ---------- Live sensor data (Supabase "readings" table) ----------
   // Only rooms currently in the registry are eligible for live data - this
@@ -396,7 +483,7 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
         selectedId,
         setSelectedId,
         thresholds,
-        setThresholds,
+        setThresholds: setThresholdsPersist,
         settings,
         setSettings,
         toggleOnline,

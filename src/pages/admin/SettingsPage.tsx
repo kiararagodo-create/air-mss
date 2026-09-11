@@ -1,11 +1,9 @@
 import { useState, type CSSProperties } from "react";
-import { Bell, Save, Shield, SlidersHorizontal, User } from "lucide-react";
-import { Badge, Toggle } from "../../ui";
+import { Save, Shield, SlidersHorizontal, User } from "lucide-react";
+import { Badge } from "../../ui";
 
 // Local type definitions to avoid depending on AdminDashboard module
-type Settings = {
-  emailAlerts: boolean;
-};
+type Settings = {};
 
 type SensorTier = { warning: number; high: number; danger: number };
 
@@ -30,20 +28,18 @@ type AppUser = {
 };
 
 interface SettingsPageProps {
-  settings: Settings;
   setSettings: (settings: Settings) => void;
   thresholds: Thresholds;
   setThresholds: (thresholds: Thresholds) => void;
   user: AppUser;
 }
 
-export default function SettingsPage({ settings, setSettings, thresholds, setThresholds, user }: SettingsPageProps) {
-  const [local, setLocal] = useState<Settings>(settings);
+export default function SettingsPage({ setSettings, thresholds, setThresholds, user }: SettingsPageProps) {
   const [localThresholds, setLocalThresholds] = useState<Thresholds>(thresholds);
   const [saved, setSaved] = useState(false);
 
   function save() {
-    setSettings(local);
+    setSettings({} as Settings);
     setThresholds(localThresholds);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -60,7 +56,6 @@ export default function SettingsPage({ settings, setSettings, thresholds, setThr
   const smallLabel: CSSProperties = { fontSize: 11, fontWeight: 700, color: "#64748b" };
 
   const overviewRows: [string, string][] = [
-    ["Email Dispatches:", local.emailAlerts ? "Enabled" : "Disabled"],
     [
       "CO2 tiers:",
       `${localThresholds.co2.warning} / ${localThresholds.co2.high} / ${localThresholds.co2.danger} ppm`,
@@ -133,31 +128,6 @@ export default function SettingsPage({ settings, setSettings, thresholds, setThr
             }}
           >
             <SlidersHorizontal size={16} /> System Preferences & Safety Controls
-          </div>
-
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              background: "#f8fafc",
-              borderRadius: 10,
-              padding: 14,
-              marginBottom: 16,
-            }}
-          >
-            <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-              <Bell size={16} color="#0d9488" style={{ marginTop: 2 }} />
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>
-                  Email Safety Notifications
-                </div>
-                <div style={{ fontSize: 12, color: "#64748b" }}>
-                  Send immediate email dispatches when CO2 or LPG breaches safety limits.
-                </div>
-              </div>
-            </div>
-            <Toggle checked={local.emailAlerts} onChange={(v: boolean) => setLocal({ ...local, emailAlerts: v })} />
           </div>
 
           <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 12 }}>

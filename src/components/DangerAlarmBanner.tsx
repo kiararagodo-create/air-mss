@@ -6,7 +6,7 @@ interface DangerAlarmBannerProps {
 }
 
 export default function DangerAlarmBanner({ isDanger }: DangerAlarmBannerProps) {
-  const { isSounding, isMuted, toggleMute } = useDangerAlarm(isDanger);
+  const { isMuted, toggleMute } = useDangerAlarm(isDanger);
 
   if (!isDanger) return null;
 

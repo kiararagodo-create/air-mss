@@ -71,6 +71,7 @@ export function useDangerAlarm(isDanger: boolean) {
 
   return {
     isSounding: isDanger && !muted,
-    mute: () => setMuted(true),
+    isMuted: muted,
+    toggleMute: () => setMuted((prev) => !prev),
   };
 }

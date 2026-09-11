@@ -1,4 +1,4 @@
-import { AlertTriangle, VolumeX } from "lucide-react";
+import { AlertTriangle, VolumeX, Volume2 } from "lucide-react";
 import { useDangerAlarm } from "../hooks/useDangerAlarm";
 
 interface DangerAlarmBannerProps {
@@ -6,7 +6,7 @@ interface DangerAlarmBannerProps {
 }
 
 export default function DangerAlarmBanner({ isDanger }: DangerAlarmBannerProps) {
-  const { isSounding, mute } = useDangerAlarm(isDanger);
+  const { isSounding, isMuted, toggleMute } = useDangerAlarm(isDanger);
 
   if (!isDanger) return null;
 
@@ -18,15 +18,13 @@ export default function DangerAlarmBanner({ isDanger }: DangerAlarmBannerProps) 
           DANGER — gas levels exceed safe limits in one or more rooms
         </span>
       </div>
-      {isSounding && (
-        <button
-          onClick={mute}
-          className="flex items-center gap-1.5 shrink-0 bg-white/15 hover:bg-white/25 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
-        >
-          <VolumeX className="w-3.5 h-3.5" />
-          Mute Alarm
-        </button>
-      )}
+      <button
+        onClick={toggleMute}
+        className="flex items-center gap-1.5 shrink-0 bg-white/15 hover:bg-white/25 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+      >
+        {isMuted ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+        {isMuted ? "Unmute Alarm" : "Mute Alarm"}
+      </button>
     </div>
   );
 }

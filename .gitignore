@@ -1,3 +1,14 @@
 node_modules
 dist/
-tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+
+supabase/.temp/
+.devserver.log
+.devserver.log.err
+
+.kilo/
+test.txt

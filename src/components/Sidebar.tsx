@@ -5,6 +5,7 @@ import type { UserRole } from "../types";
 import type { Profile } from "../context/AuthContext";
 import { getPermissions } from "../lib/permissions";
 import ChangePasswordModal from "./ChangePasswordModal";
+import NotificationBell from "./NotificationBell";
 
 interface SidebarProps {
   role: UserRole;
@@ -48,13 +49,16 @@ export default function Sidebar({ role, profile, onSignOut }: SidebarProps) {
           </div>
           <span className="font-semibold text-slate-900 text-sm">A.I.R.</span>
         </div>
-        <button
-          onClick={() => setOpen(true)}
-          aria-label="Open menu"
-          className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center text-slate-600"
-        >
-          <Menu className="w-5 h-5" />
-        </button>
+        <div className="flex items-center gap-2">
+          <NotificationBell />
+          <button
+            onClick={() => setOpen(true)}
+            aria-label="Open menu"
+            className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center text-slate-600"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+        </div>
       </div>
 
       {/* Backdrop, mobile only, shown while drawer is open */}
@@ -87,6 +91,11 @@ export default function Sidebar({ role, profile, onSignOut }: SidebarProps) {
           >
             <X className="w-5 h-5" />
           </button>
+          {/* Surfaces "monthly report ready" notices produced by the
+              server-side archive job while the app was closed. */}
+          <div className="flex items-center gap-2">
+            <NotificationBell />
+          </div>
         </div>
 
         <div className="mx-4 mb-5 p-3 rounded-xl bg-slate-50 flex items-center gap-2.5">

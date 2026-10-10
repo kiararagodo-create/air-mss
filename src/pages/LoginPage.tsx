@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   Wind,
   Mail,
@@ -15,8 +15,22 @@ import {
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
+// One message for every outcome. Never echo the address back or branch on
+// whether it exists, or the form becomes an account-enumeration oracle.
+const RESET_SENT_MESSAGE =
+  "If that email is registered, a reset link has been sent.";
+
 export default function LoginPage() {
-  const [mode, setMode] = useState<"signin" | "forgot">("signin");
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const { message, openForgot } = (location.state ?? {}) as {
+    message?: string;
+    openForgot?: boolean;
+  };
+
+  // /reset-password hands off here when a recovery link is dead or used up.
+  const [mode, setMode] = useState<"signin" | "forgot">(openForgot ? "forgot" : "signin");
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -25,12 +39,13 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   const [resetEmail, setResetEmail] = useState("");
-  const [resetError, setResetError] = useState<string | null>(null);
   const [resetLoading, setResetLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
 
-  const { login } = useAuth();
-  const navigate = useNavigate();
+  const { login, requestPasswordReset } = useAuth();
+
+  // Shown above the form after a successful reset.
+  const notice = message ?? null;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -55,28 +70,24 @@ export default function LoginPage() {
 
   async function handleResetSubmit(e: FormEvent) {
     e.preventDefault();
-    setResetError(null);
 
     if (!resetEmail) {
-      setResetError("Please enter your email address.");
+      setResetSent(true);
       return;
     }
 
     setResetLoading(true);
-    const { error } = await resetPass(resetEmail);
+    // Errors are deliberately swallowed into the same success state: a
+    // "user not found" from Supabase must not read differently from a
+    // successful send.
+    await requestPasswordReset(resetEmail);
     setResetLoading(false);
-
-    if (error ) {
-      setResetError(error);
-      return;
-    }
 
     setResetSent(true);
   }
 
   function switchToForgot() {
     setResetEmail(email);
-    setResetError(null);
     setResetSent(false);
     setMode("forgot");
   }
@@ -84,6 +95,8 @@ export default function LoginPage() {
   function switchToSignIn() {
     setError(null);
     setMode("signin");
+    // Drop the notice so it doesn't reappear on a later manual visit.
+    if (notice) navigate("/login", { replace: true, state: null });
   }
 
   return (
@@ -104,6 +117,12 @@ export default function LoginPage() {
                 <ShieldCheck className="w-4 h-4 text-teal-600" />
                 <h2 className="text-sm font-medium">Sign In to Dashboard</h2>
               </div>
+
+              {notice && (
+                <div className="mb-4 px-3.5 py-2.5 rounded-lg bg-teal-50 border border-teal-200 text-sm text-teal-800">
+                  {notice}
+                </div>
+              )}
 
               {error && (
                 <div className="mb-4 px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
@@ -137,9 +156,9 @@ export default function LoginPage() {
                     <button
                       type="button"
                       onClick={switchToForgot}
-                      className="text-xs font-medium text-teal-600 hover:text-teal-700"
+className="text-xs font-medium text-teal-600 hover:text-teal-700"
                     >
-                   
+                      Forgot password?
                     </button>
                   </div>
                   <div className="relative">
@@ -200,8 +219,8 @@ export default function LoginPage() {
                   </div>
                   <p className="text-sm text-slate-700 font-medium mb-1">Check your email</p>
                   <p className="text-sm text-slate-500 mb-6">
-                    We sent a password reset link to <span className="font-medium text-slate-700">{resetEmail}</span>.
-                    Follow the link to choose a new password.
+                    {RESET_SENT_MESSAGE} Check your inbox and follow the link
+                    to choose a new password.
                   </p>
                   <button
                     type="button"
@@ -218,12 +237,6 @@ export default function LoginPage() {
                     Enter the email associated with your account and we'll send you a link to reset your password.
                   </p>
 
-                  {resetError && (
-                    <div className="mb-4 px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-                      {resetError}
-                    </div>
-                  )}
-
                   <form onSubmit={handleResetSubmit} className="space-y-4">
                     <div>
                       <label className="block text-xs font-medium tracking-wide text-slate-500 mb-1.5">
@@ -235,7 +248,7 @@ export default function LoginPage() {
                           type="email"
                           value={resetEmail}
                           onChange={(e) => setResetEmail(e.target.value)}
-                          placeholder="kiararagodo@gmail.com"
+                          placeholder="user email"
                           autoComplete="email"
                           className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
                         />
@@ -274,8 +287,4 @@ export default function LoginPage() {
       </div>
     </div>
   );
-}
-
-function resetPass(_resetEmail: string): { error: any; } | PromiseLike<{ error: any; }> {
-  throw new Error("Function not implemented.");
 }

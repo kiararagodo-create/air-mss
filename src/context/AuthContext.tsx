@@ -33,8 +33,7 @@ interface AuthContextValue {
   loading: boolean;
   login: (email: string, password: string) => Promise<{ error: string | null }>;
   logout: () => Promise<void>;
-  sendPasswordResetCode: (email: string) => Promise<{ error: string | null }>;
-  verifyPasswordResetCode: (email: string, code: string) => Promise<{ error: string | null }>;
+  requestPasswordReset: (email: string) => Promise<{ error: string | null }>;
   updatePassword: (newPassword: string) => Promise<{ error: string | null }>;
   refreshProfile: () => Promise<Profile | null>;
 }
@@ -193,27 +192,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await supabase.auth.signOut();
   }
 
-  // Sends a 6-digit recovery code to the user's email. Requires the
-  // Supabase "Reset Password" email template to include {{ .Token }}
-  // (see project setup notes) so the message shows a code, not a link.
-  async function sendPasswordResetCode(email: string) {
-    const { error } = await supabase.auth.resetPasswordForEmail(email);
-
-    if (error) {
-      return { error: error.message };
-    }
-
-    return { error: null };
-  }
-
-  // Verifies the code the user typed in. On success Supabase establishes
-  // a short-lived "recovery" session, which is what allows updatePassword
-  // to work immediately after, all without leaving this page.
-  async function verifyPasswordResetCode(email: string, code: string) {
-    const { error } = await supabase.auth.verifyOtp({
-      email,
-      token: code,
-      type: "recovery",
+  // Emails a recovery link that lands on /reset-password. The redirectTo is
+  // built from the current origin so the same build works on Netlify preview
+  // URLs and on localhost; the host must still be allow-listed under
+  // Supabase -> Authentication -> URL Configuration, otherwise the link is
+  // rejected.
+  //
+  // The caller is responsible for showing one uniform message regardless of
+  // the outcome. Supabase returns success for unknown addresses to avoid
+  // leaking which emails are registered, but a misconfigured redirect can
+  // still surface an error worth showing.
+  async function requestPasswordReset(email: string) {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/reset-password`,
     });
 
     if (error) {
@@ -223,9 +214,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: null };
   }
 
-  // Sets the new password on the recovery session created by
-  // verifyPasswordResetCode, then signs out so the user logs back in
-  // fresh with their new credentials.
+  // Sets the new password on the recovery session that the emailed link
+  // established, then signs out so the user logs back in fresh with their new
+  // credentials.
   async function updatePassword(newPassword: string) {
     const { error } = await supabase.auth.updateUser({ password: newPassword });
 
@@ -245,8 +236,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     login,
     logout,
-    sendPasswordResetCode,
-    verifyPasswordResetCode,
+    requestPasswordReset,
     updatePassword,
     refreshProfile,
   };

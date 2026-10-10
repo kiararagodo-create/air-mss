@@ -12,9 +12,7 @@ import DevicesPage from "./pages/DevicesPage";
 import ReportsPage from "./pages/admin/ReportsPage";
 import SettingsPage from "./pages/admin/SettingsPage";
 import PersonnelManagementPage from "./pages/admin/PersonnelManagementPage";
-// Note: ResetPasswordPage is NOT imported/routed separately —
-// LoginPage.tsx already handles "forgot password" inline via its
-// mode state ("signin" | "forgot"), so a dedicated route isn't needed.
+import ResetPasswordPage from "./pages/Resetpasswordpage";
 
 // Thin wrappers so the page components keep receiving props (unchanged),
 // while the real values come from RoomsContext/AuthContext instead of the
@@ -106,12 +104,18 @@ function SettingsRoute() {
 }
 
 // Route map:
-//   /login       -> public, sign-in screen (also handles "forgot password" inline)
-//   /dashboard   -> protected, every role, content differs by role
-//   /devices     -> protected, every role, content + permissions differ by role
-//   /reports     -> protected, ADMIN ONLY (RoleRoute redirects others to /dashboard)
-//   /settings    -> protected, ADMIN ONLY (RoleRoute redirects others to /dashboard)
-//   /personnel   -> protected, ADMIN ONLY (RoleRoute redirects others to /dashboard)
+//   /login          -> public, sign-in screen (also handles "forgot password"
+//                      inline via its mode state)
+//   /register       -> public, self-service registration
+//   /reset-password -> public, sets a new password from the emailed recovery
+//                      link. Must stay OUTSIDE ProtectedRoute: the recovery
+//                      session's profile may not be loaded/approved yet, so
+//                      gating on `role` would bounce a legitimate user away.
+//   /dashboard      -> protected, every role, content differs by role
+//   /devices        -> protected, every role, content + permissions differ by role
+//   /reports        -> protected, ADMIN ONLY (RoleRoute redirects others to /dashboard)
+//   /settings       -> protected, ADMIN ONLY (RoleRoute redirects others to /dashboard)
+//   /personnel      -> protected, ADMIN ONLY (RoleRoute redirects others to /dashboard)
 //   anything else (including "/") -> redirect to /dashboard (which itself
 //                    redirects to /login if not signed in)
 export default function App() {
@@ -123,6 +127,7 @@ export default function App() {
             <Routes>
               <Route path="/login" element={<LoginPage />} />
               <Route path="/register" element={<RegisterPage />} />
+              <Route path="/reset-password" element={<ResetPasswordPage />} />
 
               <Route element={<ProtectedRoute />}>
                 <Route element={<DashboardLayout />}>

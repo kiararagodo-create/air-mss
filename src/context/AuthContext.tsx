@@ -20,6 +20,9 @@ export interface Profile {
   contact_number: string | null;
   access_scope: string | null;
   is_active: boolean;
+  account_status: "pending" | "approved" | "rejected" | "disabled";
+  approved_at: string | null;
+  approved_by: string | null;
 }
 
 interface AuthContextValue {
@@ -33,9 +36,20 @@ interface AuthContextValue {
   sendPasswordResetCode: (email: string) => Promise<{ error: string | null }>;
   verifyPasswordResetCode: (email: string, code: string) => Promise<{ error: string | null }>;
   updatePassword: (newPassword: string) => Promise<{ error: string | null }>;
+  refreshProfile: () => Promise<Profile | null>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+
+// Admins are provisioned only through the bootstrap_admins allowlist or direct
+// SQL, never through the approval queue, so they are exempt from it. An
+// explicit deactivation by an admin always wins, including for an admin.
+// Every other role must be 'approved' to get in.
+function isLoginAllowed(row: Profile): boolean {
+  if (!row.is_active) return false;
+  if (row.role === "admin") return row.account_status !== "disabled";
+  return row.account_status === "approved";
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -55,10 +69,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { profile: null, isActive: false };
     }
 
-    const row = data as Profile | null;
-    const isActive = row?.is_active ?? false;
-    setProfile(isActive ? row : null);
-    return { profile: row, isActive };
+    const row = (data ?? null) as Profile | null;
+    const allowed = row ? isLoginAllowed(row) : false;
+    setProfile(allowed ? row : null);
+    return { profile: row, isActive: allowed };
+  }
+
+  async function refreshProfile(): Promise<Profile | null> {
+    const userId = session?.user?.id ?? profile?.id;
+    if (!userId) return null;
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", userId)
+      .single();
+    if (error) {
+      console.error("Failed to refresh profile:", error.message);
+      return null;
+    }
+    const row = (data ?? null) as Profile | null;
+    setProfile(row && isLoginAllowed(row) ? row : null);
+    return row;
   }
 
   useEffect(() => {
@@ -98,11 +129,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     if (data.user) {
-      const { isActive } = await fetchProfile(data.user.id);
-      if (!isActive) {
+      // Fetch the full profile so we can check account_status and is_active
+      // separately, and give each blocked state its own message.
+      const { data: profileRow, error: profileError } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", data.user.id)
+        .single();
+
+      if (profileError) {
+        console.error("Failed to load profile during login:", profileError.message);
         await supabase.auth.signOut();
-        return { error: "This account has been deactivated. Contact your administrator." };
+        return { error: "We couldn't verify your account right now. Please try again in a moment." };
       }
+
+      if (!profileRow) {
+        // A profile row is created for every auth signup by the
+        // on_auth_user_created trigger, so this only happens for accounts
+        // that predate it. Say so plainly instead of implying a network fault.
+        await supabase.auth.signOut();
+        return { error: "No account profile was found for this login. Please contact your administrator." };
+      }
+
+      const row = profileRow as Profile;
+      const status = row.account_status ?? "pending";
+      const isAdmin = row.role === "admin";
+
+      // Deactivation is checked first and applies to admins too: an admin who
+      // has been deactivated by another admin must not slip in via the bypass.
+      if (!row.is_active) {
+        await supabase.auth.signOut();
+        return { error: "Your account has been deactivated by an administrator. Contact your administrator." };
+      }
+      if (status === "disabled") {
+        await supabase.auth.signOut();
+        return { error: "Your account has been disabled by an administrator. Contact your administrator." };
+      }
+
+      // Admins bypass the approval queue; everyone else must be approved.
+      if (!isAdmin) {
+        if (status === "rejected") {
+          await supabase.auth.signOut();
+          return { error: "Your account request was rejected. Contact your administrator." };
+        }
+        if (status === "pending") {
+          await supabase.auth.signOut();
+          return { error: "Your account is still waiting for Admin approval." };
+        }
+        if (status !== "approved") {
+          await supabase.auth.signOut();
+          return { error: "Your account is not approved. Contact your administrator." };
+        }
+      }
+
+      setProfile(row);
+      return { error: null };
     }
 
     return { error: null };
@@ -167,6 +248,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sendPasswordResetCode,
     verifyPasswordResetCode,
     updatePassword,
+    refreshProfile,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -15,11 +15,17 @@ interface Personnel {
   created_at: string;
 }
 
+// All roles, used for display and for editing an existing admin.
 const ROLE_OPTIONS = [
   { value: "admin", label: "Administrator" },
   { value: "security", label: "Security Personnel" },
   { value: "maintenance", label: "Maintenance Personnel" },
 ];
+
+// Admins are provisioned only via the bootstrap_admins allowlist or direct SQL,
+// never through the app, so the Add form and the Edit form of a non-admin
+// offer only the two assignable roles.
+const ADD_ROLE_OPTIONS = ROLE_OPTIONS.filter((r) => r.value !== "admin");
 
 function RoleIcon({ role }: { role: string }) {
   if (role === "admin") return <Crown className="w-3 h-3" />;
@@ -124,7 +130,7 @@ export default function PersonnelManagementPage() {
       return;
     }
 
-    const roleLabel = ROLE_OPTIONS.find((r) => r.value === form.role)?.label ?? form.role;
+    const roleLabel = ADD_ROLE_OPTIONS.find((r) => r.value === form.role)?.label ?? form.role;
 
     const { data, error } = await supabase.functions.invoke("admin-create-personnel", {
       body: {
@@ -195,6 +201,14 @@ export default function PersonnelManagementPage() {
 
     if (!editForm.name || !editForm.email) {
       setEditError("Name and email are required.");
+      return;
+    }
+
+    // Admins can only be provisioned via bootstrap_admins / SQL. The dropdown
+    // already hides the option for non-admins; this catches a stale form state
+    // too. The database enforces the same rule (see the migration).
+    if (editingPerson.role !== "admin" && editForm.role === "admin") {
+      setEditError("Only existing admins can hold the Administrator role.");
       return;
     }
 
@@ -546,7 +560,7 @@ export default function PersonnelManagementPage() {
                   onChange={(e) => setForm({ ...form, role: e.target.value })}
                   className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
                 >
-                  {ROLE_OPTIONS.map((opt) => (
+                  {ADD_ROLE_OPTIONS.map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}
                     </option>
@@ -642,7 +656,10 @@ export default function PersonnelManagementPage() {
                   onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
                   className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
                 >
-                  {ROLE_OPTIONS.map((opt) => (
+                  {/* An existing admin keeps the full list; anyone else only
+                      sees the two assignable roles, so nobody can be promoted
+                      to admin from this screen. */}
+                  {(editingPerson.role === "admin" ? ROLE_OPTIONS : ADD_ROLE_OPTIONS).map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}
                     </option>

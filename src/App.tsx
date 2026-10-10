@@ -1,10 +1,12 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { RoomsProvider, useRooms } from "./context/RoomsContext";
+import { NotificationsProvider } from "./context/NotificationContext";
 import ProtectedRoute from "./routes/ProtectedRoute";
 import RoleRoute from "./routes/RoleRoute";
 import DashboardLayout from "./layouts/DashboardLayout";
 import LoginPage from "./pages/LoginPage";
+import RegisterPage from "./pages/RegisterPage";
 import DashboardPage from "./pages/DashboardPage";
 import DevicesPage from "./pages/DevicesPage";
 import ReportsPage from "./pages/admin/ReportsPage";
@@ -116,26 +118,29 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <RoomsProvider>
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
+        <NotificationsProvider>
+          <RoomsProvider>
+            <Routes>
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/register" element={<RegisterPage />} />
 
-            <Route element={<ProtectedRoute />}>
-              <Route element={<DashboardLayout />}>
-                <Route path="/dashboard" element={<DashboardRoute />} />
-                <Route path="/devices" element={<DevicesRoute />} />
+              <Route element={<ProtectedRoute />}>
+                <Route element={<DashboardLayout />}>
+                  <Route path="/dashboard" element={<DashboardRoute />} />
+                  <Route path="/devices" element={<DevicesRoute />} />
 
-                <Route element={<RoleRoute allow={["admin"]} />}>
-                  <Route path="/reports" element={<ReportsRoute />} />
-                  <Route path="/settings" element={<SettingsRoute />} />
-                  <Route path="/personnel" element={<PersonnelManagementPage />} />
+                  <Route element={<RoleRoute allow={["admin"]} />}>
+                    <Route path="/reports" element={<ReportsRoute />} />
+                    <Route path="/settings" element={<SettingsRoute />} />
+                    <Route path="/personnel" element={<PersonnelManagementPage />} />
+                  </Route>
                 </Route>
               </Route>
-            </Route>
 
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
-          </Routes>
-        </RoomsProvider>
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            </Routes>
+          </RoomsProvider>
+        </NotificationsProvider>
       </AuthProvider>
     </BrowserRouter>
   );

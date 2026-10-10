@@ -1,0 +1,30 @@
+// Re-export shim so the smoke test imports the real shared module.
+export {
+  COLORS,
+  PdfBuilder,
+  buildAnalysis,
+  concatBytes,
+  csvCell,
+  csvRow,
+  CSV_HEADER,
+  dangerHigh,
+  dangerLow,
+  fmtTs,
+  humanDate,
+  isDangerRow,
+  manilaDateString,
+  manilaDayEndIso,
+  manilaDayStartIso,
+  monthLabel,
+  num,
+  parseManilaDate,
+  streamReadings,
+  thresholdNote,
+  triggeredBy,
+  uploadAndVerify,
+  warnLine,
+  METRIC_LABEL,
+  METRIC_UNIT,
+} from "../supabase/functions/_shared/reporting.ts";
+
+export const ThresholdNoteStub = undefined;

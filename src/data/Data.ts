@@ -1,4 +1,3 @@
-import type { IoTDevice } from "../types";
 
 type Tone = "success" | "warning" | "high" | "danger";
 
@@ -45,11 +44,28 @@ export interface Room {
   length: number;
   width: number;
   height: number;
+  // -------------------------------------------------------------------------
+  // LIVE READING VALUES.
+  //
+  // These come ONLY from the `readings` table. `null` means "the sensor has
+  // not sent a value for this metric" and MUST be rendered as a missing value,
+  // never as 0. A null here is not the same as a measured zero and must never
+  // be treated as a safe or in-range reading.
+  //
+  // They are deliberately NOT seeded from the `rooms.co2` / `rooms.lpg` columns.
+  // Those columns hold whatever was last written by the device-registration
+  // form and are not measurements; displaying them would present invented
+  // numbers as sensor readings.
+  // -------------------------------------------------------------------------
   co2: number | null;
   lpg: number | null;
-  temp: number;
-  humidity: number;
+  temp: number | null;
+  humidity: number | null;
   online: boolean;
+  /** Timestamp of the newest reading that produced the values above, or null
+   *  when no reading has ever been received. Used to show the age of a number
+   *  so a stale value is never mistaken for a current one. */
+  lastReadingAt: string | null;
   alertCount: number;
   installedAt: string; // ISO date string - when this device was deployed
   // Per-device siren mute flag, polled by the ESP32 firmware (siren_muted
@@ -68,6 +84,12 @@ export interface Status {
   severity: number;
   label: string;
   tone: Tone;
+  /**
+   * False when every measured metric is null, i.e. no actual sensor reading has
+   * been received. `severity` is 0 in that case, but that must NOT be read as
+   * "measured and safe" - callers must render an explicit no-data state.
+   */
+  hasData: boolean;
 }
 
 export interface ActionMessage {
@@ -125,6 +147,64 @@ export const SEVERITY_META: SeverityMeta[] = [
   { severity: 3, label: "Gas Risk", tone: "danger" },
 ];
 
+/** Shown wherever a metric has no measurement at all. Never a numeric value. */
+export const NO_DATA_LABEL = "No sensor data recorded";
+
+// Worst-case severity across CO2 and LPG readings drives the room's badge/tone.
+// Boundary semantics are `>=`, matching reading_is_danger() in SQL and
+// isDangerRow() in supabase/functions/_shared/reporting.ts, so the dashboard
+// badge and the PDF never disagree about a reading sitting exactly on a limit.
+export function getStatus(room: Room, thresholds: Thresholds): Status {
+  const co2Severity = severityFor(room.co2, thresholds.co2);
+  const lpgSeverity = severityFor(room.lpg, thresholds.lpg);
+  const severity = Math.max(co2Severity, lpgSeverity);
+  // A severity of 0 that came from actual readings is "Good". A severity of 0
+  // that came from nothing at all is "No sensor data recorded" and must be
+  // styled as absent, not as a passing result.
+  const hasData = room.co2 !== null || room.lpg !== null;
+
+  if (!hasData) {
+    return { severity: 0, label: NO_DATA_LABEL, tone: "success", hasData: false };
+  }
+
+  const meta = SEVERITY_META[severity];
+  const label = severity === 3 && lpgSeverity === 3 ? "Gas Risk" : meta.label;
+  return { severity, label, tone: meta.tone, hasData: true };
+}
+
+export function actionMessage(room: Room, thresholds: Thresholds): ActionMessage {
+  const status = getStatus(room, thresholds);
+
+  if (!status.hasData) {
+    return {
+      title: "No sensor data received",
+      body: "This device has not reported a CO2 or LPG reading, so no condition can be assessed. " +
+        "This is an absence of data, not a safe reading. Check that the sensor is powered and reporting.",
+    };
+  }
+
+  const status0 = status.severity;
+  if (status0 === 0)
+    return {
+      title: "No action needed",
+      body: "CO2 and LPG levels are within safe limits. Continue monitoring the area.",
+    };
+  if (status0 === 1)
+    return {
+      title: "Monitor conditions",
+      body: "Gas levels are elevated; observe the area closely and reduce exposure if possible.",
+    };
+  if (status0 === 2)
+    return {
+      title: "Investigate elevated readings",
+      body: "Air quality parameters are trending high. Increase ventilation and monitor closely for further escalation.",
+    };
+  return {
+    title: "Immediate action required",
+    body: "Gas or CO2 levels have reached dangerous limits. Evacuate the area, ventilate immediately, and dispatch maintenance/security personnel.",
+  };
+}
+
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
@@ -151,47 +231,14 @@ export function deviceAgeLabel(installedAt: string): string {
 }
 
 function severityFor(value: number | null, tiers: ThresholdTier): number {
+  // A missing value contributes no severity. It is NOT a reading of 0, and it
+  // must not be allowed to imply a safe result on its own - getStatus() reports
+  // `hasData: false` in that case so the UI can say so explicitly.
   if (value == null) return 0;
   if (value >= tiers.danger) return 3;
   if (value >= tiers.high) return 2;
   if (value >= tiers.warning) return 1;
   return 0;
-}
-
-// Worst-case severity across CO2 and LPG readings drives the room's badge/tone.
-export function getStatus(room: Room, thresholds: Thresholds): Status {
-  const co2Severity = severityFor(room.co2, thresholds.co2);
-  const lpgSeverity = room.lpg != null ? severityFor(room.lpg, thresholds.lpg) : 0;
-  const severity = Math.max(co2Severity, lpgSeverity);
-  const meta = SEVERITY_META[severity];
-  const label = severity === 3 && lpgSeverity === 3 ? "Gas Risk" : meta.label;
-  return { severity, label, tone: meta.tone };
-}
-
-export function actionMessage(room: Room, thresholds: Thresholds): ActionMessage {
-  const status = getStatus(room, thresholds);
-  switch (status.severity) {
-    case 3:
-      return {
-        title: "Immediate action required",
-        body: "Gas or CO2 levels have reached dangerous limits. Evacuate the area, ventilate immediately, and dispatch maintenance/security personnel.",
-      };
-    case 2:
-      return {
-        title: "Elevated readings detected",
-        body: "Air quality parameters are trending high. Increase ventilation and monitor closely for further escalation.",
-      };
-    case 1:
-      return {
-        title: "Levels rising, monitor closely",
-        body: "Readings are above baseline but not yet critical. No immediate action required, but keep watch.",
-      };
-    default:
-      return {
-        title: "Air quality is good",
-        body: "Air quality parameters are well within safe operating limits. No immediate action required.",
-      };
-  }
 }
 
 export function exportCSV(rooms: Room[], thresholds: Thresholds): void {
@@ -212,16 +259,20 @@ export function exportCSV(rooms: Room[], thresholds: Thresholds): void {
       r.name,
       r.floor,
       r.id,
-      r.co2 != null ? Math.round(r.co2) : "N/A",
-      r.lpg != null ? Math.round(r.lpg) : "N/A",
-      r.temp.toFixed(1),
-      Math.round(r.humidity),
-      r.alertCount,
-      status.label,
+      // A metric with no reading is written as an empty cell, which is how a
+      // CSV consumer distinguishes "not measured" from a measured zero.
+      r.co2 != null ? String(Math.round(r.co2)) : "",
+      r.lpg != null ? String(Math.round(r.lpg)) : "",
+      r.temp != null ? r.temp.toFixed(1) : "",
+      r.humidity != null ? String(Math.round(r.humidity)) : "",
+      String(r.alertCount),
+      status.hasData ? status.label : NO_DATA_LABEL,
     ];
   });
-  const csv = [headers, ...rows].map((row) => row.join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv" });
+  // Quote every cell: room and floor names legitimately contain commas.
+  const escape = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
+  const csv = [headers, ...rows].map((row) => row.map(escape).join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -229,6 +280,20 @@ export function exportCSV(rooms: Room[], thresholds: Thresholds): void {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// ---------------------------------------------------------------------------
+// NOTE: this module deliberately contains NO sample or demo sensor data.
+//
+// An earlier version exported INITIAL_ROOMS and devices with invented values
+// (e.g. co2: 990, temp: 27.5) as UI fixtures. Nothing imported them, but
+// fabricated readings living in a data module is a hazard: they can be wired
+// into a view as a fallback and then rendered as if a sensor had sent them.
+// They have been deleted.
+//
+// Live values come only from the Supabase `readings` table via RoomsContext.
+// A metric with no reading is `null` and is displayed as NO_DATA_LABEL, never
+// as 0.
+// ---------------------------------------------------------------------------
 
 export const SENSOR_INFO: SensorInfo[] = [
   {
@@ -275,85 +340,3 @@ export const SENSOR_INFO: SensorInfo[] = [
   },
 ];
 
-export const INITIAL_ROOMS: Room[] = [
-  {
-    id: "AIR-106",
-    name: "Room 106",
-    floor: "Ground Floor",
-    co2Sensor: "MH-Z19C",
-    gasSensor: null,
-    length: 8,
-    width: 6,
-    height: 3,
-    co2: 490,
-    lpg: null,
-    temp: 27.5,
-    humidity: 55,
-    online: false,
-    alertCount: 0,
-    installedAt: "2024-08-15",
-    sirenMuted: false,
-  },
-  {
-    id: "AIR-K01",
-    name: "Kitchen",
-    floor: "3rd Floor",
-    co2Sensor: "MH-Z19C",
-    gasSensor: "MQ-6",
-    // Matches this room's own id, which is also the DEVICE_ID your live
-    // ESP32 sends (readings.device_id has a foreign key to rooms.id).
-    deviceId: "AIR-K01",
-    length: 6,
-    width: 5,
-    height: 3,
-    co2: 992,
-    lpg: 510,
-    temp: 30.2,
-    humidity: 60,
-    online: true,
-    alertCount: 3,
-    installedAt: "2025-01-10",
-    sirenMuted: false,
-  },
-  {
-    id: "AIR-CL02",
-    name: "Chem Lab Room",
-    floor: "2nd Floor",
-    co2Sensor: "MH-Z19C",
-    gasSensor: "MQ-6",
-    length: 10,
-    width: 8,
-    height: 3.2,
-    co2: 974,
-    lpg: 333,
-    temp: 28.8,
-    humidity: 58,
-    online: false,
-    alertCount: 2,
-    installedAt: "2023-11-02",
-    sirenMuted: false,
-  },
-];
-
-// ---------------------------------------------------------------------------
-// devices - required by DeviceContext.tsx (`import { devices as initialDevices }
-// from "../data/Data"`). Built from the same room data above, with `online`
-// mapped to `connectionStatus` to match the IoTDevice shape DeviceContext
-// and setDeviceStatus() expect.
-// ---------------------------------------------------------------------------
-export const devices: IoTDevice[] = INITIAL_ROOMS.map((r) => ({
-  id: r.id,
-  name: r.name,
-  floor: r.floor,
-  co2Sensor: r.co2Sensor,
-  gasSensor: r.gasSensor,
-  length: r.length,
-  width: r.width,
-  height: r.height,
-  co2: r.co2,
-  lpg: r.lpg,
-  temp: r.temp,
-  humidity: r.humidity,
-  connectionStatus: r.online ? "online" : "offline",
-  alertCount: r.alertCount,
-})) as unknown as IoTDevice[];

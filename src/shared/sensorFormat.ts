@@ -9,7 +9,17 @@
 // ---- Metric keys (must match SQL helper metric column values) ----
 export type SensorMetric = "co2" | "lpg" | "temp" | "humidity";
 
-// ---- Threshold constants — keep in sync with SQL fns + ESP32 firmware ----
+// ---- Threshold constants — FALLBACKS ONLY ----
+//
+// These are the built-in defaults and are NOT what your deployment is using
+// once an admin has edited the safety limits. They exist only so a chart has
+// something sensible to draw before the configured values are loaded.
+//
+// Real threshold lines must come from the `thresholds` object held in
+// RoomsContext (the `platform_thresholds` table). Drawing these instead meant
+// the history chart's danger line could contradict the severity the same screen
+// reported from the configured thresholds. Pass the live values into
+// computeYAxisRange() / dangerThreshold() rather than relying on these.
 export const CO2_WARN = 1000;
 export const CO2_DANGER = 3500;
 export const LPG_WARN = 1000;
@@ -43,23 +53,132 @@ export const METRIC_Y_AXIS_TITLE: Record<SensorMetric, string> = {
   humidity: "Humidity (%)",
 };
 
-// ---- Danger threshold per metric (used for threshold lines) ----
-export function dangerThreshold(metric: SensorMetric): number | null {
+// ---- Threshold helpers ----------------------------------------------------
+// These accept the LIVE configured thresholds. `metric`-specific lookups keep
+// the two-sided temperature and humidity bands, which have a lower danger
+// limit as well as an upper one.
+
+export interface LiveThresholds {
+  co2: { warning: number; high: number; danger: number };
+  lpg: { warning: number; high: number; danger: number };
+  temp: { freezeBelow: number; coolBelow: number; heatAbove: number };
+  humidity: { dryBelow: number; lowBelow: number; moldAbove: number };
+}
+
+/** Upper danger threshold for the metric, from the live configuration. */
+export function liveDangerThreshold(th: LiveThresholds, metric: SensorMetric): number {
   switch (metric) {
-    case "co2": return CO2_DANGER;
-    case "lpg": return LPG_DANGER;
-    case "temp": return TEMP_DANGER_HIGH;
-    case "humidity": return HUM_DANGER_HIGH;
+    case "co2":
+      return th.co2.danger;
+    case "lpg":
+      return th.lpg.danger;
+    case "temp":
+      return th.temp.heatAbove;
+    case "humidity":
+      return th.humidity.moldAbove;
   }
 }
 
-// ---- Warning threshold per metric (null = no warning line) ----
-export function warnThreshold(metric: SensorMetric): number | null {
+/** Lower danger threshold, or null for metrics that are only bounded above. */
+export function liveDangerLow(th: LiveThresholds, metric: SensorMetric): number | null {
   switch (metric) {
-    case "co2": return CO2_WARN;
-    case "lpg": return LPG_WARN;
-    case "temp": return null;
-    case "humidity": return null;
+    case "co2":
+    case "lpg":
+      return null;
+    case "temp":
+      return th.temp.freezeBelow;
+    case "humidity":
+      return th.humidity.dryBelow;
+  }
+}
+
+/** Warning threshold, or null where no warning tier is configured. */
+export function liveWarnThreshold(th: LiveThresholds, metric: SensorMetric): number | null {
+  switch (metric) {
+    case "co2":
+      return th.co2.warning;
+    case "lpg":
+      return th.lpg.warning;
+    // Temperature and humidity are two-sided with no intermediate tier in this
+    // system, so no warning line is drawn for them.
+    case "temp":
+    case "humidity":
+      return null;
+  }
+}
+
+/**
+ * Y-axis domain from the real data plus the live thresholds, so threshold
+ * lines always fall inside the plot frame.
+ *
+ * `minVal`/`maxVal` are computed from recorded values upstream; when a bucket
+ * had no readings it must be excluded rather than passed as 0, otherwise a gap
+ * drags the axis to zero and misrepresents the recorded range.
+ */
+export function computeYAxisRange(
+  minVal: number | null,
+  maxVal: number | null,
+  metric: SensorMetric,
+  thresholds?: LiveThresholds | null
+): { yMin: number; yMax: number } {
+  // Fall back to the built-in defaults only when no live configuration was
+  // supplied, so the function is still usable before thresholds have loaded.
+  const d = thresholds
+    ? liveDangerThreshold(thresholds, metric)
+    : (metric === "co2" ? CO2_DANGER : metric === "lpg" ? LPG_DANGER : metric === "temp" ? TEMP_DANGER_HIGH : HUM_DANGER_HIGH);
+  const dLow = thresholds ? liveDangerLow(thresholds, metric) : dangerLowDefault(metric);
+  const w = thresholds
+    ? liveWarnThreshold(thresholds, metric)
+    : metric === "co2"
+    ? CO2_WARN
+    : metric === "lpg"
+    ? LPG_WARN
+    : null;
+
+  const rawMin = minVal ?? 0;
+  const rawMax = maxVal ?? 1;
+
+  let domainMin = Math.min(rawMin, d ?? Infinity, w ?? Infinity, dLow ?? Infinity);
+  let domainMax = Math.max(rawMax, d ?? 0, w ?? 0);
+
+  // If all values are equal or nearly equal, use a sensible default range
+  if (domainMax - domainMin < 1e-6) {
+    domainMin = Math.max(0, domainMin - 10);
+    domainMax = domainMin + 20;
+  }
+
+  // Add 10% padding on each side so the line never touches the border
+  const range = domainMax - domainMin || 1;
+  const padding = range * 0.10;
+  let yMin = domainMin - padding;
+  let yMax = domainMax + padding;
+
+  // Enforce threshold bounds so threshold lines always fit. Each metric gets
+  // its own margin above its own configured danger value.
+  const headroom = metric === "temp" ? 2 : 300;
+  const lowPad = metric === "temp" ? 2 : 5;
+  yMax = Math.max(yMax, d + headroom);
+  if (dLow !== null) {
+    yMin = Math.min(yMin, dLow - lowPad);
+  }
+
+  // Ensure yMin is never negative for ppm/% metrics
+  if (metric !== "temp") {
+    yMin = Math.max(0, yMin);
+  }
+
+  return { yMin, yMax };
+}
+
+function dangerLowDefault(metric: SensorMetric): number | null {
+  switch (metric) {
+    case "co2":
+    case "lpg":
+      return null;
+    case "temp":
+      return TEMP_DANGER_LOW;
+    case "humidity":
+      return HUM_DANGER_LOW;
   }
 }
 
@@ -79,56 +198,6 @@ export function formatTickLabel(val: number, metric: SensorMetric): string {
   return `${display} ${unit}`;
 }
 
-// ---- Compute a sensible Y-axis range from actual data + thresholds ----
-// Ensures the plotted line NEVER touches the chart border by adding
-// dynamic padding. Also includes threshold lines in the domain so they
-// stay inside the frame.
-export function computeYAxisRange(
-  minVal: number | null,
-  maxVal: number | null,
-  metric: SensorMetric,
-): { yMin: number; yMax: number } {
-  const rawMin = minVal ?? 0;
-  const rawMax = maxVal ?? 1;
-  const d = dangerThreshold(metric);
-  const w = warnThreshold(metric);
-
-  // Determine domain from data + thresholds
-  let domainMin = Math.min(rawMin, d ?? Infinity, w ?? Infinity);
-  let domainMax = Math.max(rawMax, d ?? 0, w ?? 0);
-
-  // If all values are equal or nearly equal, use a sensible default range
-  if (domainMax - domainMin < 1e-6) {
-    domainMin = Math.max(0, domainMin - 10);
-    domainMax = domainMin + 20;
-  }
-
-  // Add 10% padding on each side so the line never touches the border
-  const range = domainMax - domainMin || 1;
-  const padding = range * 0.10;
-  let yMin = domainMin - padding;
-  let yMax = domainMax + padding;
-
-  // Enforce threshold bounds so threshold lines always fit
-  if (metric === "co2" || metric === "lpg") {
-    yMax = Math.max(yMax, CO2_DANGER + 300);
-  }
-  if (metric === "temp") {
-    yMin = Math.min(yMin, TEMP_DANGER_LOW - 2);
-    yMax = Math.max(yMax, TEMP_DANGER_HIGH + 2);
-  }
-  if (metric === "humidity") {
-    yMin = Math.min(yMin, HUM_DANGER_LOW - 5);
-    yMax = Math.max(yMax, HUM_DANGER_HIGH + 5);
-  }
-
-  // Ensure yMin is never negative for ppm/% metrics
-  if (metric !== "temp") {
-    yMin = Math.max(0, yMin);
-  }
-
-  return { yMin, yMax };
-}
 
 // ---- Build ~N evenly-spaced Y-axis tick labels ----
 export function buildYAxisTicks(yMin: number, yMax: number, metric: SensorMetric, count = 5): { val: number; label: string }[] {

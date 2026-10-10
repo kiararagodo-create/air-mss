@@ -32,8 +32,12 @@ const RoomsContext = createContext<RoomsContextValue | undefined>(undefined);
 // rooms table columns: id, name, floor, sensor (legacy combined field, kept
 // but unused), co2_sensor, gas_sensor, temp_humidity_sensor, length, width,
 // height, co2, lpg, alert_count, last_seen, created_at,
-// installed_at, siren_muted. temp/humidity/online are NOT stored here - they
-// come live from the "readings" table below, keyed by device_id = room id.
+// installed_at, siren_muted.
+//
+// IMPORTANT: rooms.co2 and rooms.lpg are NOT measurements. They are legacy
+// columns last written by the device-registration form. They are deliberately
+// NOT read into Room here - doing so presented the form's default numbers as
+// live sensor readings. Live values come only from the readings table.
 interface RoomRow {
   id: string;
   name: string;
@@ -65,13 +69,14 @@ function rowToRoom(row: RoomRow): Room {
     length: row.length,
     width: row.width,
     height: row.height,
-    co2: row.co2,
-    lpg: row.lpg,
-    // Placeholder until the readings fetch/subscription below fills these
-    // in for real, per-device.
-    temp: 0,
-    humidity: 0,
+    // null, NOT a placeholder number, until the readings fetch below supplies
+    // a real measurement. Null renders as "No sensor data recorded".
+    co2: null,
+    lpg: null,
+    temp: null,
+    humidity: null,
     online: false,
+    lastReadingAt: null,
     alertCount: row.alert_count ?? 0,
     installedAt: row.installed_at ?? new Date().toISOString().slice(0, 10),
     sirenMuted: row.siren_muted ?? false,
@@ -89,8 +94,9 @@ function roomToInsertRow(form: RoomForm) {
     length: Number(form.length ?? 6),
     width: Number(form.width ?? 4),
     height: Number(form.height ?? 3),
-    co2: form.co2 != null ? Number(form.co2) : null,
-    lpg: form.lpg != null ? Number(form.lpg) : null,
+    // co2 / lpg are intentionally absent. They are not sensor measurements, and
+    // writing a default here is what previously caused a newly registered
+    // device to display a fabricated "400 ppm CO2 / 0 ppm LPG".
     alert_count: 0,
     installed_at: new Date().toISOString().slice(0, 10),
     // siren_muted has a DB default of false, so it's fine to omit here -
@@ -105,10 +111,10 @@ function roomToInsertRow(form: RoomForm) {
 interface ReadingRow {
   device_id: string;
   co2: number | null;
-  lpg: number;
+  lpg: number | null;
   temp: number | null;
   humidity: number | null;
-  severity: number;
+  severity: number | null;
   created_at: string;
 }
 
@@ -158,6 +164,7 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
   }
 
   async function persistThresholds(next: Thresholds): Promise<void> {
+    const now = new Date().toISOString();
     const row = {
       id: 1,
       co2_warning: next.co2.warning,
@@ -172,13 +179,76 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
       humidity_dry_below: next.humidity.dryBelow,
       humidity_low_below: next.humidity.lowBelow,
       humidity_mold_above: next.humidity.moldAbove,
-      updated_at: new Date().toISOString(),
+      updated_at: now,
     };
     const { error } = await supabase
       .from("platform_thresholds")
       .upsert(row, { onConflict: "id" });
     if (error) {
       console.error("Failed to persist platform thresholds:", error.message);
+      return;
+    }
+
+    // Append to threshold_history in the same change.
+    //
+    // Reports evaluate readings against the thresholds that were in effect at
+    // the time, not against whatever is configured now. platform_thresholds
+    // only ever holds the current values, so without this log a report for a
+    // past month would silently be scored using present-day settings - which
+    // is exactly the kind of invented history the reporting rules forbid.
+    //
+    // Only write when something actually changed, otherwise every save would
+    // add a duplicate history row.
+    const { data: previous } = await supabase
+      .from("threshold_history")
+      .select("*")
+      .order("effective_from", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const changed =
+      !previous ||
+      Number(previous.co2_danger) !== Number(next.co2.danger) ||
+      Number(previous.co2_warning) !== Number(next.co2.warning) ||
+      Number(previous.co2_high) !== Number(next.co2.high) ||
+      Number(previous.lpg_danger) !== Number(next.lpg.danger) ||
+      Number(previous.lpg_warning) !== Number(next.lpg.warning) ||
+      Number(previous.lpg_high) !== Number(next.lpg.high) ||
+      Number(previous.temp_freeze_below) !== Number(next.temp.freezeBelow) ||
+      Number(previous.temp_cool_below) !== Number(next.temp.coolBelow) ||
+      Number(previous.temp_heat_above) !== Number(next.temp.heatAbove) ||
+      Number(previous.humidity_dry_below) !== Number(next.humidity.dryBelow) ||
+      Number(previous.humidity_low_below) !== Number(next.humidity.lowBelow) ||
+      Number(previous.humidity_mold_above) !== Number(next.humidity.moldAbove);
+
+    if (!changed) return;
+
+    const { error: historyError } = await supabase.from("threshold_history").insert({
+      // Spelled out rather than spread from `row`, because threshold_history has
+      // its own `effective_from` and has no `id` / `updated_at` columns.
+      effective_from: now,
+      co2_warning: next.co2.warning,
+      co2_high: next.co2.high,
+      co2_danger: next.co2.danger,
+      lpg_warning: next.lpg.warning,
+      lpg_high: next.lpg.high,
+      lpg_danger: next.lpg.danger,
+      temp_freeze_below: next.temp.freezeBelow,
+      temp_cool_below: next.temp.coolBelow,
+      temp_heat_above: next.temp.heatAbove,
+      humidity_dry_below: next.humidity.dryBelow,
+      humidity_low_below: next.humidity.lowBelow,
+      humidity_mold_above: next.humidity.moldAbove,
+      change_note: "Updated from the Settings page",
+    });
+
+    if (historyError) {
+      // Not fatal: the live thresholds saved fine. Reports for periods before
+      // now will be labelled as evaluated against current thresholds.
+      console.error(
+        "Failed to record threshold history (reports for past periods will use current thresholds):",
+        historyError.message
+      );
     }
   }
 
@@ -284,8 +354,7 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
   // recomputes automatically whenever `rooms` changes (e.g. a new device
   // was just added).
   const deviceIds = rooms.map((r) => r.deviceId).filter((id): id is string => !!id);
-
-  const fetchLatestFor = useCallback(async (deviceId: string) => {
+const fetchLatestFor = useCallback(async (deviceId: string) => {
     const { data, error } = await supabase
       .from("readings")
       .select("device_id, co2, lpg, temp, humidity, severity, created_at")
@@ -295,23 +364,43 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
       .maybeSingle<ReadingRow>();
 
     if (error) {
+      // Leave the previous values and lastReadingAt untouched so the UI can
+      // keep showing how old they are. Silently blanking them would be worse,
+      // and silently freezing them without a timestamp is what this fixes.
       console.error(`Failed to fetch latest reading for ${deviceId}:`, error.message);
       return;
     }
-    if (!data) return; // no readings yet for this device -> stays offline/null
+
+    if (!data) {
+      // No readings have EVER been received for this device. Every live metric
+      // stays null so the UI reports "No sensor data recorded" rather than a
+      // fabricated or zero value.
+      setRooms((prev) =>
+        prev.map((r) =>
+          r.deviceId === deviceId
+            ? { ...r, co2: null, lpg: null, temp: null, humidity: null, online: false, lastReadingAt: null }
+            : r
+        )
+      );
+      return;
+    }
 
     const isRecent = Date.now() - new Date(data.created_at).getTime() < OFFLINE_THRESHOLD_MS;
 
+    // Assign the sensor's values verbatim. A NULL in the reading row stays
+    // NULL - it is not replaced by a previous value or a zero, because the
+    // sensor genuinely returned nothing for that metric.
     setRooms((prev) =>
       prev.map((r) =>
         r.deviceId === deviceId
           ? {
               ...r,
-              lpg: data.lpg,
-              co2: data.co2 ?? r.co2,
-              temp: data.temp ?? r.temp,
-              humidity: data.humidity ?? r.humidity,
+              lpg: data.lpg ?? null,
+              co2: data.co2 ?? null,
+              temp: data.temp ?? null,
+              humidity: data.humidity ?? null,
               online: isRecent,
+              lastReadingAt: data.created_at,
             }
           : r
       )
@@ -341,11 +430,13 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
               r.deviceId === row.device_id
                 ? {
                     ...r,
-                    lpg: row.lpg,
-                    co2: row.co2 ?? r.co2,
-                    temp: row.temp ?? r.temp,
-                    humidity: row.humidity ?? r.humidity,
+                    // Verbatim: a NULL metric stays NULL.
+                    lpg: row.lpg ?? null,
+                    co2: row.co2 ?? null,
+                    temp: row.temp ?? null,
+                    humidity: row.humidity ?? null,
                     online: true,
+                    lastReadingAt: row.created_at,
                   }
                 : r
             )

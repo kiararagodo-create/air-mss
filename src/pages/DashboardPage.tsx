@@ -12,6 +12,7 @@ import {
   Wifi,
 } from "lucide-react";
 import DangerAlarmBanner from "../components/DangerAlarmBanner";
+import { NO_DATA_LABEL } from "../data/Data";
 
 // Lightweight local replacements for ./ui to avoid missing-module errors.
 // Kept minimal — styling inline to match expected usage in this file.
@@ -71,41 +72,75 @@ function clamp(v: number, a: number, b: number) {
   return Math.max(a, Math.min(b, v));
 }
 
+/** "12s ago", "4m ago", "3h ago", "2d ago" - the age of the newest reading. */
+function formatReadingAge(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "unknown";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+/**
+ * Severity from ACTUAL measurements only.
+ *
+ * - A null metric contributes nothing and is never treated as 0. Scoring a
+ *   missing LPG reading as 0 ppm previously produced a green "OK" badge for a
+ *   device that had never reported LPG at all.
+ * - Boundary comparisons use `>=`, matching reading_is_danger() in SQL and
+ *   isDangerRow() in the PDF generator, so a reading sitting exactly on a limit
+ *   is classified identically everywhere.
+ * - `hasData` is false when no measured metric exists, so callers can render an
+ *   explicit no-data state instead of implying a safe reading.
+ */
 function getStatus(room: Room, thresholds: Thresholds) {
-  const co2 = room.co2;
-  const lpg = room.lpg ?? 0;
-  const co2Severity =
-    co2 == null
-      ? 0
-      : co2 > thresholds.co2.danger
-      ? 3
-      : co2 > thresholds.co2.high
-      ? 2
-      : co2 > thresholds.co2.warning
-      ? 1
-      : 0;
-  const lpgSeverity = lpg > thresholds.lpg.danger ? 3 : lpg > thresholds.lpg.high ? 2 : lpg > thresholds.lpg.warning ? 1 : 0;
+  const tier = (v: number | null | undefined, t: { warning: number; high: number; danger: number }) =>
+    v == null ? 0 : v >= t.danger ? 3 : v >= t.high ? 2 : v >= t.warning ? 1 : 0;
+
+  const co2Severity = tier(room.co2, thresholds.co2);
+  const lpgSeverity = tier(room.lpg ?? null, thresholds.lpg);
   const severity = Math.max(co2Severity, lpgSeverity);
   const tone: Tone[] = ["success", "warning", "high", "danger"];
   const labels = ["OK", "Monitor", "Investigate", "DANGER"];
-  return { severity, tone: tone[severity] as Tone, label: labels[severity] };
+
+  const hasData = room.co2 != null || (room.lpg ?? null) != null;
+  return {
+    severity,
+    tone: tone[severity] as Tone,
+    label: hasData ? labels[severity] : NO_DATA_LABEL,
+    hasData,
+  };
 }
 
 type ActionPlan = { title: string; body: string };
 
 function actionMessage(room: Room, thresholds: Thresholds): ActionPlan {
-  const status = getStatus(room, thresholds).severity;
-  if (status === 0)
+  const status = getStatus(room, thresholds);
+
+  if (!status.hasData) {
+    return {
+      title: "No sensor data received",
+      body: "This device has not reported a CO2 or LPG reading, so no condition can be assessed. " +
+        "This is an absence of data, not a safe reading. Check that the sensor is powered and reporting.",
+    };
+  }
+
+  const severity = status.severity;
+  if (severity === 0)
     return {
       title: "No action needed",
       body: "CO2 and LPG levels are within safe limits. Continue monitoring the area.",
     };
-  if (status === 1)
+  if (severity === 1)
     return {
       title: "Monitor conditions",
       body: "Gas levels are elevated; observe the area closely and reduce exposure if possible.",
     };
-  if (status === 2)
+  if (severity === 2)
     return {
       title: "Investigate immediately",
       body: "High concentrations detected. Inspect the area immediately and address any sources.",
@@ -124,12 +159,14 @@ function actionMessage(room: Room, thresholds: Thresholds): ActionPlan {
 function getGasStatus(
   value: number | null | undefined,
   t: { warning: number; high: number; danger: number }
-): { severity: number; tone: Tone; label: string } {
-  if (value == null) return { severity: 0, tone: "neutral", label: "N/A" };
-  const severity = value > t.danger ? 3 : value > t.high ? 2 : value > t.warning ? 1 : 0;
+): { severity: number; tone: Tone; label: string; hasData: boolean } {
+  if (value == null)
+    return { severity: 0, tone: "neutral", label: NO_DATA_LABEL, hasData: false };
+  // `>=`, matching getStatus() and the SQL/PDF danger comparison.
+  const severity = value >= t.danger ? 3 : value >= t.high ? 2 : value >= t.warning ? 1 : 0;
   const tone: Tone[] = ["success", "warning", "high", "danger"];
   const labels = ["OK", "Monitor", "Investigate", "DANGER"];
-  return { severity, tone: tone[severity], label: labels[severity] };
+  return { severity, tone: tone[severity], label: labels[severity], hasData: true };
 }
 
 // Local type definitions to avoid depending on AdminDashboard module.
@@ -144,8 +181,12 @@ export interface Room {
   online: boolean;
   co2Sensor: SensorName;
   gasSensor?: SensorName | null;
-  temp: number;
-  humidity: number;
+  // null = the sensor has not reported this metric. Must be rendered as a
+  // missing value, never as 0 and never as a safe-looking reading.
+  temp: number | null;
+  humidity: number | null;
+  /** Timestamp of the newest reading behind the values above, for staleness. */
+  lastReadingAt?: string | null;
 }
 
 export interface Thresholds {
@@ -580,7 +621,11 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
             <div>
               <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8" }}>TEMPERATURE</div>
               <div style={{ fontSize: 15, fontWeight: 800, color: "#0f172a" }}>
-                {selected.temp.toFixed(1)} &deg;C
+                {selected.temp !== null && selected.temp !== undefined ? (
+                  <>{selected.temp.toFixed(1)} &deg;C</>
+                ) : (
+                  <span style={{ color: "#94a3b8", fontSize: 12.5 }}>{NO_DATA_LABEL}</span>
+                )}
               </div>
             </div>
           </div>
@@ -598,7 +643,11 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
             <div>
               <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8" }}>HUMIDITY</div>
               <div style={{ fontSize: 15, fontWeight: 800, color: "#0f172a" }}>
-                {Math.round(selected.humidity)}%
+                {selected.humidity !== null && selected.humidity !== undefined ? (
+                  <>{Math.round(selected.humidity)}%</>
+                ) : (
+                  <span style={{ color: "#94a3b8", fontSize: 12.5 }}>{NO_DATA_LABEL}</span>
+                )}
               </div>
             </div>
           </div>
@@ -682,6 +731,9 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
             const isOpen = openRoomId === r.id;
             const isSelected = r.id === selected.id;
             const roomAction = actionMessage(r, thresholds);
+            // Per-row gas tones, so one row's colour cannot bleed into another.
+            const rowCo2Status = getGasStatus(r.co2, thresholds.co2);
+            const rowLpgStatus = getGasStatus(r.lpg ?? null, thresholds.lpg);
             return (
               <div
                 key={r.id}
@@ -715,13 +767,13 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                   <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
                     <span style={{ fontSize: 12.5, color: "#334155", display: "none" }} />
                     <div style={{ textAlign: "right", fontSize: 12 }}>
-                      <div style={{ color: "#334155" }}>
-                        {r.co2 != null ? `${Math.round(r.co2)} CO2 ppm` : "N/A"}
+                        <div style={{ color: r.co2 != null ? "#334155" : "#94a3b8" }}>
+                          {r.co2 != null ? `${Math.round(r.co2)} CO2 ppm` : NO_DATA_LABEL}
+                        </div>
+                        <div style={{ color: r.lpg != null ? "#334155" : "#94a3b8" }}>
+                          {r.lpg != null ? `${Math.round(r.lpg)} LPG ppm` : NO_DATA_LABEL}
+                        </div>
                       </div>
-                      <div style={{ color: "#334155" }}>
-                        {r.lpg != null ? `${Math.round(r.lpg)} LPG ppm` : "N/A"}
-                      </div>
-                    </div>
                     <Badge label={st.label} tone={st.tone} />
                   </div>
                 </button>
@@ -736,28 +788,38 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                         marginTop: 12,
                       }}
                     >
-                      <div style={{ background: toneBg[co2GasStatus.tone] ?? "#f8fafc", borderRadius: 8, padding: 10 }}>
+                      {/* Tone comes from THIS row's own CO2 reading, not the selected room's.
+                          Previously every open row was tinted by the selected
+                          room, so a row could show a green background next to a
+                          red number. */}
+                      <div style={{ background: rowCo2Status.hasData ? (toneBg[rowCo2Status.tone] ?? "#f8fafc") : "#f1f5f9", borderRadius: 8, padding: 10 }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>CO2</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
-                          {r.co2 != null ? `${Math.round(r.co2)} ppm` : "N/A"}
+                          {r.co2 != null ? `${Math.round(r.co2)} ppm` : NO_DATA_LABEL}
                         </div>
                       </div>
-                      <div style={{ background: "#f8fafc", borderRadius: 8, padding: 10 }}>
+                      <div
+                        style={{
+                          background: rowLpgStatus.hasData ? (toneBg[rowLpgStatus.tone] ?? "#f8fafc") : "#f1f5f9",
+                          borderRadius: 8,
+                          padding: 10,
+                        }}
+                      >
                         <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>LPG</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
-                          {r.lpg != null ? `${Math.round(r.lpg)} ppm` : "N/A"}
+                          {r.lpg != null ? `${Math.round(r.lpg)} ppm` : NO_DATA_LABEL}
                         </div>
                       </div>
                       <div style={{ background: "#f8fafc", borderRadius: 8, padding: 10 }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>TEMPERATURE</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
-                          {r.temp.toFixed(1)} &deg;C
+                          {r.temp != null ? `${r.temp.toFixed(1)} °C` : NO_DATA_LABEL}
                         </div>
                       </div>
                       <div style={{ background: "#f8fafc", borderRadius: 8, padding: 10 }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>HUMIDITY</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
-                          {Math.round(r.humidity)}%
+                          {r.humidity != null ? `${Math.round(r.humidity)}%` : NO_DATA_LABEL}
                         </div>
                       </div>
                     </div>
@@ -773,6 +835,15 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                       }}
                     >
                       <Badge label={r.online ? "ONLINE" : "OFFLINE"} tone={r.online ? "success" : "neutral"} />
+                      {/* A frozen last-known number must never read as a current
+                          measurement, so its age is always shown alongside it. */}
+                      {!r.online && (
+                        <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                          {r.lastReadingAt
+                            ? `last reading ${formatReadingAge(r.lastReadingAt)}`
+                            : "no reading ever received"}
+                        </span>
+                      )}
                       <span>{roomAction.body}</span>
                     </div>
                     {!isSelected && (

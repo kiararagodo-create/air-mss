@@ -9,8 +9,21 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
-import { Room, Thresholds, getStatus, volumeOf } from "../data/Data";
+import { NO_DATA_LABEL, Room, Thresholds, getStatus, volumeOf } from "../data/Data";
 import { Badge } from "../ui";
+
+/** "12s ago", "4m ago", "3h ago", "2d ago" - the age of the newest reading. */
+function formatReadingAge(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "unknown";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
 
 type User = {
   id: string;
@@ -86,11 +99,14 @@ function AddDeviceModal({
     co2Sensor: CO2_SENSOR_OPTIONS[0],
     gasSensor: GAS_SENSOR_OPTIONS[0],
     tempHumiditySensor: TEMP_HUMIDITY_SENSOR_OPTIONS[0],
-    co2: 400,
-    lpg: 0,
-    temp: 25,
-    humidity: 50,
-    online: true,
+    // No co2 / lpg / temp / humidity defaults.
+    //
+    // These fields were never shown in the modal and never came from a sensor,
+    // yet roomToInsertRow() persisted them to the rooms table, where they were
+    // read back as live readings. A newly registered device therefore displayed
+    // a fabricated "400 ppm CO2 / 0 ppm LPG" until its first real reading
+    // arrived. They are now left null so the device shows "No sensor data
+    // recorded" until the ESP32 actually reports something.
   });
 
   const updateField = (field: string, value: any) => {
@@ -753,8 +769,14 @@ export default function DevicesPage({
                                 </div>
                                 <div>
                                   <div style={{ fontSize: 11, color: "#64748b" }}>CO2 Reading</div>
-                                  <div style={{ fontSize: 17, fontWeight: 800, color: "#0d9488" }}>
-                                    {room.co2 != null ? `${Math.round(room.co2)} ppm` : "N/A"}
+                                  <div
+                                    style={{
+                                      fontSize: 17,
+                                      fontWeight: 800,
+                                      color: room.co2 != null ? "#0d9488" : "#94a3b8",
+                                    }}
+                                  >
+                                    {room.co2 != null ? `${Math.round(room.co2)} ppm` : NO_DATA_LABEL}
                                   </div>
                                 </div>
                                 <div>
@@ -766,15 +788,24 @@ export default function DevicesPage({
                                       color: room.lpg != null ? "#0d9488" : "#94a3b8",
                                     }}
                                   >
-                                    {room.lpg != null ? `${Math.round(room.lpg)} ppm` : "N/A"}
+                                    {room.lpg != null ? `${Math.round(room.lpg)} ppm` : NO_DATA_LABEL}
                                   </div>
                                 </div>
                                 <div>
                                   <div style={{ fontSize: 11, color: "#64748b" }}>Temp / Humidity</div>
-                                  <div style={{ fontSize: 17, fontWeight: 800, color: "#0d9488" }}>
-                                    {room.tempHumiditySensor
-                                      ? `${room.temp.toFixed(1)}\u00b0C / ${Math.round(room.humidity)}%`
-                                      : "N/A"}
+                                  <div
+                                    style={{
+                                      fontSize: room.temp != null ? 17 : 12,
+                                      fontWeight: 800,
+                                      color:
+                                        room.temp != null && room.humidity != null ? "#0d9478" : "#94a3b8",
+                                    }}
+                                  >
+                                    {room.temp == null || room.humidity == null ? (
+                                      NO_DATA_LABEL
+                                    ) : (
+                                      `${room.temp.toFixed(1)}\u00b0C / ${Math.round(room.humidity)}%`
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -784,6 +815,15 @@ export default function DevicesPage({
                                   label={room.online ? "Online" : "Offline"}
                                   tone={room.online ? "success" : "neutral"}
                                 />
+                                {/* A frozen last-known number must not read as a
+                                    current measurement, so show how old it is. */}
+                                {!room.online && (
+                                  <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                                    {room.lastReadingAt
+                                      ? `last reading ${formatReadingAge(room.lastReadingAt)}`
+                                      : "no reading ever received"}
+                                  </span>
+                                )}
                                 <button
                                   onClick={() => canManage && toggleSiren(room.id)}
                                   disabled={!canManage}

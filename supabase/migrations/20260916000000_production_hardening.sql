@@ -160,6 +160,30 @@ grant execute on function public.report_month_stats(integer, integer, text, json
 alter table public.rooms    enable row level security;
 alter table public.readings enable row level security;
 
+-- is_active_admin() is defined in 20260915000000_reference_thresholds.sql, which
+-- may not have been applied to a given project yet. Re-declaring it here (the
+-- same body, idempotently) means this migration can be applied on its own
+-- without depending on migration order.
+create or replace function public.is_active_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1
+    from public.profiles p
+    where p.id = auth.uid()::text
+      and p.role = 'admin'
+      and p.account_status = 'approved'
+      and p.is_active
+  );
+$$;
+
+revoke all on function public.is_active_admin() from public, anon;
+grant execute on function public.is_active_admin() to authenticated;
+
 drop policy if exists "authenticated can read rooms" on public.rooms;
 create policy "authenticated can read rooms"
   on public.rooms

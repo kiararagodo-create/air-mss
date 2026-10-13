@@ -162,7 +162,7 @@ as $$
   select exists (
     select 1
     from public.profiles p
-    where p.id = auth.uid()::text
+    where p.id::text = auth.uid()::text
       and p.role = 'admin'
       and p.account_status = 'approved'
       and p.is_active

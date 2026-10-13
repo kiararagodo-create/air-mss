@@ -25,15 +25,17 @@ select
   p.account_status,
   p.created_at
 from auth.users u
-left join public.profiles p on p.id = u.id::text
+left join public.profiles p on p.id::text = u.id::text
 where lower(u.email) = 'kiararagodo@gmail.com';
 
 -- Step 2: promote the account to an active, approved admin.
 do $$
 declare
-  v_uid text;
+  -- profiles.id is uuid on this project (auth.users.id is uuid and the column
+  -- was created with it). approved_by is text, so it needs the cast below.
+  v_uid uuid;
 begin
-  select id::text into v_uid
+  select id into v_uid
   from auth.users
   where lower(email) = lower('kiararagodo@gmail.com');
 
@@ -45,14 +47,14 @@ begin
     (id, email, name, role, role_label, is_active, account_status, approved_at, approved_by)
   values
     (v_uid, 'kiararagodo@gmail.com', 'Kiara Ragodo', 'admin', 'Administrator',
-     true, 'approved', now(), v_uid)
+     true, 'approved', now(), v_uid::text)
   on conflict (id) do update
     set role           = 'admin',
         role_label     = 'Administrator',
         is_active      = true,
         account_status = 'approved',
         approved_at    = now(),
-        approved_by    = v_uid;
+        approved_by    = v_uid::text;
 end $$;
 
 -- Step 3: also register the address as a bootstrap admin so any future auth

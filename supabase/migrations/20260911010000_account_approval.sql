@@ -22,9 +22,16 @@ update public.profiles
    and (account_status is null or account_status = 'pending');
 
 -- Notifications: one-way messages addressed to a specific user.
+-- user_id is uuid, not text: public.profiles.id is uuid on this project and a
+-- text column cannot reference it (incompatible key types), while a uuid column
+-- is what the edge functions already pass (auth.users.id).
+--
+-- `if not exists` makes this a no-op where the table already exists, so on a
+-- pre-existing project the live user_id can still be text. 20260916010000
+-- converges it to uuid.
 create table if not exists public.notifications (
   id          bigserial primary key,
-  user_id     text        not null references public.profiles (id) on delete cascade,
+  user_id     uuid        not null references public.profiles (id) on delete cascade,
   kind        text        not null,                 -- 'approved' | 'rejected' | 'disabled' | 'info'
   title       text        not null,
   body        text        not null,
@@ -43,19 +50,20 @@ create policy "users can read own notifications"
   on public.notifications
   for select
   to authenticated
-  using (auth.uid()::text = user_id);
+  using (user_id::text = auth.uid()::text);
 
 drop policy if exists "users can update own notifications" on public.notifications;
 create policy "users can update own notifications"
   on public.notifications
   for update
 to authenticated
-  -- notifications.user_id is text (FK to profiles.id, which is text) while
-  -- auth.uid() returns uuid. PostgreSQL has no uuid = text operator, so an
-  -- uncast comparison raises on every read and silently disables the whole
+  -- notifications.user_id is a uuid column while auth.uid() also returns uuid,
+  -- but the column is cast so the policy keeps working on a project where
+  -- profiles.id is text. PostgreSQL has no uuid = text operator, so an uncast
+  -- comparison raises on every read and silently disables the whole
   -- notification feature. The cast must stay.
-  using (auth.uid()::text = user_id)
-  with check (auth.uid()::text = user_id);
+  using (user_id::text = auth.uid()::text)
+  with check (user_id::text = auth.uid()::text);
 
 -- Only the service role (Edge Functions) writes notifications.
 drop policy if exists "service role writes notifications" on public.notifications;

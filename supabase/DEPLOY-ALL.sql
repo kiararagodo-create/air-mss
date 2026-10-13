@@ -181,7 +181,7 @@ as $$
   select exists (
     select 1
     from public.profiles p
-    where p.id = auth.uid()::text
+    where p.id::text = auth.uid()::text
       and p.role = 'admin'
       and p.account_status = 'approved'
       and p.is_active
@@ -633,7 +633,7 @@ as $$
   select exists (
     select 1
     from public.profiles p
-    where p.id = auth.uid()::text
+    where p.id::text = auth.uid()::text
       and p.role = 'admin'
       and p.account_status = 'approved'
       and p.is_active
@@ -693,25 +693,99 @@ create policy "authenticated can read readings"
 -- ---------------------------------------------------------------------------
 -- 5: notifications RLS compared uuid to text.
 --
--- notifications.user_id is text (FK to profiles.id). auth.uid() returns uuid,
--- and PostgreSQL has neither an implicit cast nor an `=` operator for that
--- pair, so every read raised and the bell silently showed nothing.
+-- auth.uid() returns uuid, and PostgreSQL has no `=` operator for a uuid = text
+-- pair, so comparing the two uncast raised on every read and the notification
+-- bell silently showed nothing. The policies below cast the column instead,
+-- which is correct whether user_id is uuid or text.
+--
+-- 5a converts the column itself to uuid first. 20260911010000 declared it uuid,
+-- but used `create table if not exists`, so where the table already existed the
+-- declaration was a no-op and the live column stayed text - which is what
+-- re-armed the uuid = text trap in the first place. Same block as
+-- migrations/20260916010000_notifications_user_id_uuid.sql: idempotent, warns
+-- and skips if the table is absent, and raises a named error (not a bare 22P02)
+-- if any stored value is not a parseable uuid.
 -- ---------------------------------------------------------------------------
+
+do $$
+declare
+  v_col_type      text;
+  v_fk            text;
+  v_bad           bigint;
+  v_profiles_type text;
+begin
+  if to_regclass('public.notifications') is null then
+    raise warning 'public.notifications does not exist - skipped';
+    return;
+  end if;
+
+  select data_type into v_col_type
+    from information_schema.columns
+   where table_schema = 'public'
+     and table_name   = 'notifications'
+     and column_name  = 'user_id';
+
+  if v_col_type is distinct from 'text' then
+    raise notice 'notifications.user_id is already % - no conversion needed', v_col_type;
+    return;
+  end if;
+
+  select count(*) into v_bad
+    from public.notifications
+   where user_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+
+  if v_bad > 0 then
+    raise exception
+      'notifications.user_id: % row(s) are not valid uuid. Repair or delete them, then re-run.',
+      v_bad;
+  end if;
+
+  select conname into v_fk
+    from pg_constraint
+   where conrelid = 'public.notifications'::regclass
+     and contype  = 'f'
+     and pg_get_constraintdef(oid) ~ 'FOREIGN KEY \(user_id\)'
+   limit 1;
+
+  if v_fk is not null then
+    execute format('alter table public.notifications drop constraint %I', v_fk);
+  end if;
+
+  alter table public.notifications
+    alter column user_id type uuid using user_id::uuid;
+
+  select data_type into v_profiles_type
+    from information_schema.columns
+   where table_schema = 'public'
+     and table_name   = 'profiles'
+     and column_name  = 'id';
+
+  if v_profiles_type = 'uuid' then
+    alter table public.notifications
+      add constraint notifications_user_id_fkey
+      foreign key (user_id) references public.profiles (id) on delete cascade;
+  else
+    raise warning
+      'profiles.id is %, so the notifications -> profiles FK was not re-created', v_profiles_type;
+  end if;
+
+  raise notice 'notifications.user_id converted text -> uuid';
+end $$;
 
 drop policy if exists "users can read own notifications" on public.notifications;
 create policy "users can read own notifications"
   on public.notifications
   for select
   to authenticated
-  using (auth.uid()::text = user_id);
+  using (user_id::text = auth.uid()::text);
 
 drop policy if exists "users can update own notifications" on public.notifications;
 create policy "users can update own notifications"
   on public.notifications
   for update
   to authenticated
-  using (auth.uid()::text = user_id)
-  with check (auth.uid()::text = user_id);
+  using (user_id::text = auth.uid()::text)
+  with check (user_id::text = auth.uid()::text);
 
 -- ---------------------------------------------------------------------------
 -- 6: realtime publication.
@@ -776,7 +850,7 @@ as $$
   select exists (
     select 1
     from public.profiles p
-    where p.id = auth.uid()::text
+    where p.id::text = auth.uid()::text
       and p.account_status = 'approved'
       and p.is_active
   );

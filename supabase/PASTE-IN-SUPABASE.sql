@@ -314,7 +314,7 @@ set search_path = public, pg_temp
 as $$
   select exists (
     select 1 from public.profiles p
-    where p.id = auth.uid()::text
+    where p.id::text = auth.uid()::text
       and p.role = 'admin'
       and p.account_status = 'approved'
       and p.is_active
@@ -330,7 +330,7 @@ set search_path = public, pg_temp
 as $$
   select exists (
     select 1 from public.profiles p
-    where p.id = auth.uid()::text
+    where p.id::text = auth.uid()::text
       and p.account_status = 'approved'
       and p.is_active
   );
@@ -426,9 +426,10 @@ create policy "admins can delete platform_thresholds"
 -- ============================================================================
 -- PART 9 - notifications RLS compared uuid to text
 --
--- notifications.user_id is text; auth.uid() returns uuid. PostgreSQL has no
--- `uuid = text` operator, so every read RAISED and the bell silently showed
--- nothing, with the error swallowed into a console.error.
+-- notifications.user_id is a uuid column; auth.uid() also returns uuid.
+-- PostgreSQL has no `uuid = text` operator, so a one-sided cast raises on every
+-- read and the bell silently showed nothing, with the error swallowed into a
+-- console.error. Cast the column instead: correct for uuid and text alike.
 --
 -- Guarded because 20260911010000 may not have been applied either.
 -- ============================================================================
@@ -439,12 +440,12 @@ begin
     execute $p$drop policy if exists "users can read own notifications" on public.notifications$p$;
     execute $p$create policy "users can read own notifications"
              on public.notifications for select to authenticated
-             using (auth.uid()::text = user_id)$p$;
+             using (user_id::text = auth.uid()::text)$p$;
     execute $p$drop policy if exists "users can update own notifications" on public.notifications$p$;
     execute $p$create policy "users can update own notifications"
              on public.notifications for update to authenticated
-             using (auth.uid()::text = user_id)
-             with check (auth.uid()::text = user_id)$p$;
+             using (user_id::text = auth.uid()::text)
+             with check (user_id::text = auth.uid()::text)$p$;
     raise notice 'notifications RLS repaired';
   else
     raise warning 'public.notifications does not exist - skipped (20260911010000 not applied)';

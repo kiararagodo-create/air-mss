@@ -85,7 +85,7 @@ create policy threshold_history_admin_read
   using (
     exists (
       select 1 from public.profiles p
-      where p.id = auth.uid()::text
+      where p.id::text = auth.uid()::text
         and p.role = 'admin'
         and p.account_status = 'approved'
     )
@@ -98,7 +98,7 @@ create policy threshold_history_admin_write
   using (
     exists (
       select 1 from public.profiles p
-      where p.id = auth.uid()::text
+      where p.id::text = auth.uid()::text
         and p.role = 'admin'
         and p.account_status = 'approved'
     )
@@ -106,7 +106,7 @@ create policy threshold_history_admin_write
   with check (
     exists (
       select 1 from public.profiles p
-      where p.id = auth.uid()::text
+      where p.id::text = auth.uid()::text
         and p.role = 'admin'
         and p.account_status = 'approved'
     )
@@ -216,7 +216,7 @@ create policy daily_summaries_admin_read
   using (
     exists (
       select 1 from public.profiles p
-      where p.id = auth.uid()::text
+      where p.id::text = auth.uid()::text
         and p.role = 'admin'
         and p.account_status = 'approved'
     )
@@ -281,7 +281,7 @@ create policy graph_buckets_admin_read
   using (
     exists (
       select 1 from public.profiles p
-      where p.id = auth.uid()::text
+      where p.id::text = auth.uid()::text
         and p.role = 'admin'
         and p.account_status = 'approved'
     )
@@ -375,7 +375,7 @@ create policy monthly_reports_admin_read
   using (
     exists (
       select 1 from public.profiles p
-      where p.id = auth.uid()::text
+      where p.id::text = auth.uid()::text
         and p.role = 'admin'
         and p.account_status = 'approved'
     )
@@ -416,7 +416,7 @@ create policy monthly_reports_objects_admin_read
     bucket_id = 'monthly-reports'
     and exists (
       select 1 from public.profiles p
-      where p.id = auth.uid()::text
+      where p.id::text = auth.uid()::text
         and p.role = 'admin'
         and p.account_status = 'approved'
     )

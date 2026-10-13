@@ -68,7 +68,10 @@ begin
   insert into public.profiles
     (id, email, name, role, role_label, is_active, account_status)
   values
-    (new.id::text,
+    -- new.id, not new.id::text: profiles.id is uuid on this project and
+    -- PostgreSQL has no text -> uuid assignment cast (42883), while uuid -> text
+    -- is allowed. Passing the uuid works whether the column is uuid or text.
+    (new.id,
      v_email,
      coalesce(
        new.raw_user_meta_data ->> 'full_name',
@@ -129,7 +132,7 @@ begin
   if not exists (
     select 1
     from public.profiles p
-    where p.id = auth.uid()::text
+    where p.id::text = auth.uid()::text
       and p.role = 'admin'
       and p.account_status = 'approved'
       and p.is_active
@@ -172,7 +175,7 @@ create policy "read own profile"
   on public.profiles
   for select
   to authenticated
-  using (id = auth.uid()::text);
+  using (id::text = auth.uid()::text);
 
 drop policy if exists "approved admins read all profiles" on public.profiles;
 create policy "approved admins read all profiles"
@@ -182,7 +185,7 @@ create policy "approved admins read all profiles"
   using (
     exists (
       select 1 from public.profiles p
-      where p.id = auth.uid()::text
+      where p.id::text = auth.uid()::text
         and p.role = 'admin'
         and p.account_status = 'approved'
     )
@@ -193,8 +196,8 @@ create policy "update own profile"
   on public.profiles
   for update
   to authenticated
-  using (id = auth.uid()::text)
-  with check (id = auth.uid()::text);
+  using (id::text = auth.uid()::text)
+  with check (id::text = auth.uid()::text);
 
 drop policy if exists "approved admins update all profiles" on public.profiles;
 create policy "approved admins update all profiles"
@@ -204,7 +207,7 @@ create policy "approved admins update all profiles"
   using (
     exists (
       select 1 from public.profiles p
-      where p.id = auth.uid()::text
+      where p.id::text = auth.uid()::text
         and p.role = 'admin'
         and p.account_status = 'approved'
     )
@@ -219,7 +222,7 @@ create policy "approved admins delete profiles"
   using (
     exists (
       select 1 from public.profiles p
-      where p.id = auth.uid()::text
+      where p.id::text = auth.uid()::text
         and p.role = 'admin'
         and p.account_status = 'approved'
     )
@@ -232,7 +235,8 @@ create policy "approved admins delete profiles"
 -- ---------------------------------------------------------------------------
 insert into public.profiles (id, email, name, role, role_label, is_active, account_status)
 select
-  u.id::text,
+  -- see the handle_new_user insert above: uuid in, works for a uuid or text id
+  u.id,
   lower(u.email),
   coalesce(u.raw_user_meta_data ->> 'full_name',
            u.raw_user_meta_data ->> 'name',
@@ -249,5 +253,5 @@ select
        ) then 'approved' else 'pending' end
 from auth.users u
 where u.email is not null
-  and not exists (select 1 from public.profiles p where p.id = u.id::text)
+  and not exists (select 1 from public.profiles p where p.id::text = u.id::text)
 on conflict (id) do nothing;

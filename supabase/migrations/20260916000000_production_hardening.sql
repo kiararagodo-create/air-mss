@@ -223,7 +223,7 @@ as $$
   select exists (
     select 1
     from public.profiles p
-    where p.id = auth.uid()::text
+    where p.id::text = auth.uid()::text
       and p.role = 'admin'
       and p.account_status = 'approved'
       and p.is_active
@@ -283,9 +283,11 @@ create policy "authenticated can read readings"
 -- ---------------------------------------------------------------------------
 -- 5: notifications RLS compared uuid to text.
 --
--- notifications.user_id is text (FK to profiles.id). auth.uid() returns uuid,
--- and PostgreSQL has neither an implicit cast nor an `=` operator for that
--- pair, so every read raised and the bell silently showed nothing.
+-- notifications.user_id is a uuid column (FK to profiles.id). auth.uid() also
+-- returns uuid, and PostgreSQL has neither an implicit cast nor an `=` operator
+-- for a uuid = text pair, so casting auth.uid() alone still raised on every
+-- read and the bell silently showed nothing. Cast the column instead - correct
+-- whether user_id is uuid or text.
 -- ---------------------------------------------------------------------------
 
 drop policy if exists "users can read own notifications" on public.notifications;
@@ -293,15 +295,15 @@ create policy "users can read own notifications"
   on public.notifications
   for select
   to authenticated
-  using (auth.uid()::text = user_id);
+  using (user_id::text = auth.uid()::text);
 
 drop policy if exists "users can update own notifications" on public.notifications;
 create policy "users can update own notifications"
   on public.notifications
   for update
   to authenticated
-  using (auth.uid()::text = user_id)
-  with check (auth.uid()::text = user_id);
+  using (user_id::text = auth.uid()::text)
+  with check (user_id::text = auth.uid()::text);
 
 -- ---------------------------------------------------------------------------
 -- 6: realtime publication.
@@ -366,7 +368,7 @@ as $$
   select exists (
     select 1
     from public.profiles p
-    where p.id = auth.uid()::text
+    where p.id::text = auth.uid()::text
       and p.account_status = 'approved'
       and p.is_active
   );

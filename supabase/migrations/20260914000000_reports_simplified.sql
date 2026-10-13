@@ -127,8 +127,11 @@ set search_path = public
 as $$
   with th as (select public.report_thresholds(p_thresholds) v),
   bounds as (
+    -- `date + integer` adds DAYS in PostgreSQL, not months. Using `+ 1` here
+    -- would bound the month to a single day (the 1st) and silently zero out
+    -- every other day of the month.
     select (p_month_start::timestamp at time zone 'Asia/Manila') as lo,
-           ((p_month_start + 1)::timestamp at time zone 'Asia/Manila') as hi
+           (((p_month_start + interval '1 month')::date)::timestamp at time zone 'Asia/Manila') as hi
   ),
   days as (
     select generate_series(
@@ -265,7 +268,7 @@ as $$
       'co2',      coalesce((select co2_danger from stats), 0),
       'lpg',      coalesce((select lpg_danger from stats), 0),
       'temp',     coalesce((select temp_danger from stats), 0),
-      'humidity', coalesce((select hum_danger from stats), 0)
+      'humidity', coalesce((select humidity_danger from stats), 0)
     ),
     'metrics', jsonb_build_object(
       'co2', public.report_metric_obj(
@@ -364,8 +367,10 @@ set search_path = public
 as $$
   with th as (select public.report_thresholds(p_thresholds) v),
   bounds as (
+    -- See report_calendar_month: `date + integer` adds days, so the upper
+    -- bound must be built with an interval or the "month" covers one day.
     select (make_date(p_year, p_month, 1)::timestamp at time zone 'Asia/Manila') as lo,
-           ((make_date(p_year, p_month, 1) + 1)::timestamp at time zone 'Asia/Manila') as hi
+           (((make_date(p_year, p_month, 1) + interval '1 month')::date)::timestamp at time zone 'Asia/Manila') as hi
   ),
   scoped as (
     select r.*
@@ -483,14 +488,19 @@ comment on function public.report_month_stats(integer, integer, text, jsonb) is
 -- Grants + PostgREST schema reload.
 -- ---------------------------------------------------------------------------
 
-grant execute on function public.report_thresholds(jsonb) to authenticated;
-grant execute on function public.report_is_danger(numeric, numeric, numeric, numeric, jsonb) to authenticated;
-grant execute on function public.report_triggered_by(numeric, numeric, numeric, numeric, jsonb) to authenticated;
-grant execute on function public.report_metric_obj(numeric, numeric, numeric, bigint, text) to authenticated;
-grant execute on function public.report_calendar_month(date, text, jsonb) to authenticated;
-grant execute on function public.report_day_detail(date, text, jsonb, integer) to authenticated;
-grant execute on function public.report_day_danger_rows(date, text, jsonb, integer, integer) to authenticated;
-grant execute on function public.report_month_stats(integer, integer, text, jsonb) to authenticated;
+-- REVOKE must name PUBLIC, not anon. `create function` grants EXECUTE to the
+-- pseudo-role PUBLIC by default, and `anon` is only an implicit member of it,
+-- so `revoke ... from anon` removes a grant that was never made and leaves
+-- every one of these RPCs callable by an unauthenticated caller holding only
+-- the public anon key. Revoke from public FIRST, then re-grant narrowly.
+revoke execute on function public.report_thresholds(jsonb) from public;
+revoke execute on function public.report_is_danger(numeric, numeric, numeric, numeric, jsonb) from public;
+revoke execute on function public.report_triggered_by(numeric, numeric, numeric, numeric, jsonb) from public;
+revoke execute on function public.report_metric_obj(numeric, numeric, numeric, bigint, text) from public;
+revoke execute on function public.report_calendar_month(date, text, jsonb) from public;
+revoke execute on function public.report_day_detail(date, text, jsonb, integer) from public;
+revoke execute on function public.report_day_danger_rows(date, text, jsonb, integer, integer) from public;
+revoke execute on function public.report_month_stats(integer, integer, text, jsonb) from public;
 
 revoke execute on function public.report_thresholds(jsonb) from anon;
 revoke execute on function public.report_is_danger(numeric, numeric, numeric, numeric, jsonb) from anon;
@@ -500,5 +510,14 @@ revoke execute on function public.report_calendar_month(date, text, jsonb) from 
 revoke execute on function public.report_day_detail(date, text, jsonb, integer) from anon;
 revoke execute on function public.report_day_danger_rows(date, text, jsonb, integer, integer) from anon;
 revoke execute on function public.report_month_stats(integer, integer, text, jsonb) from anon;
+
+grant execute on function public.report_thresholds(jsonb) to authenticated;
+grant execute on function public.report_is_danger(numeric, numeric, numeric, numeric, jsonb) to authenticated;
+grant execute on function public.report_triggered_by(numeric, numeric, numeric, numeric, jsonb) to authenticated;
+grant execute on function public.report_metric_obj(numeric, numeric, numeric, bigint, text) to authenticated;
+grant execute on function public.report_calendar_month(date, text, jsonb) to authenticated;
+grant execute on function public.report_day_detail(date, text, jsonb, integer) to authenticated;
+grant execute on function public.report_day_danger_rows(date, text, jsonb, integer, integer) to authenticated;
+grant execute on function public.report_month_stats(integer, integer, text, jsonb) to authenticated;
 
 notify pgrst, 'reload schema';

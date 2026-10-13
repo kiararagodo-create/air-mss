@@ -7,6 +7,7 @@ import {
   dangerHigh,
   dangerLow,
   fmtNumber,
+  metricDigits,
   warnLine,
 } from "../lib/reports";
 
@@ -246,7 +247,7 @@ export default function ReportChart({
                 fill={RED}
                 fontWeight={700}
               >
-                Danger {fmtNumber(model.hi)}
+                Danger {fmtNumber(model.hi, metricDigits(metric))}
               </text>
             </>
           )}
@@ -268,7 +269,7 @@ export default function ReportChart({
                 fill={RED}
                 fontWeight={700}
               >
-                Low danger {fmtNumber(model.lo)}
+                Low danger {fmtNumber(model.lo, metricDigits(metric))}
               </text>
             </>
           )}

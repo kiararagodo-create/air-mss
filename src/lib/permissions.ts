@@ -41,8 +41,26 @@ export const PERMISSIONS: Record<UserRole, RolePermissions> = {
   },
 };
 
+/**
+ * Least privilege. Applied to any role string that is not one of the three
+ * roles above.
+ *
+ * profiles.role is a free-text column, so a value like a legacy "staff" or a
+ * typo reaches this function. Returning undefined instead made Sidebar.tsx
+ * throw on `permissions.canAccessReports`, which white-screened the entire app
+ * for that user with no error boundary. Failing closed - read-only, no reports,
+ * no settings - is both correct and survivable.
+ */
+const UNKNOWN_ROLE_PERMISSIONS: RolePermissions = {
+  canAddDevice: false,
+  canRemoveDevice: false,
+  canToggleDevice: false,
+  canAccessReports: false,
+  canAccessSettings: false,
+};
+
 export function getPermissions(role: UserRole): RolePermissions {
-  return PERMISSIONS[role];
+  return PERMISSIONS[role] ?? UNKNOWN_ROLE_PERMISSIONS;
 }
 
 /** Where to send a role after login, or after being denied an admin-only page. */

@@ -10,7 +10,8 @@ import {
   VolumeX,
 } from "lucide-react";
 import { NO_DATA_LABEL, Room, Thresholds, getStatus, volumeOf } from "../data/Data";
-import { Badge } from "../ui";
+import { metricSeverity, SEVERITY_TONE } from "../lib/thresholdConfig";
+import { Badge, badgeStyles } from "../ui";
 
 /** "12s ago", "4m ago", "3h ago", "2d ago" - the age of the newest reading. */
 function formatReadingAge(iso: string): string {
@@ -773,7 +774,13 @@ export default function DevicesPage({
                                     style={{
                                       fontSize: 17,
                                       fontWeight: 800,
-                                      color: room.co2 != null ? "#0d9488" : "#94a3b8",
+                                      // Tinted from this reading's own severity
+                                      // against the saved thresholds, so the number
+                                      // and the badge beside it can never disagree.
+                                      color:
+                                        room.co2 != null
+                                          ? badgeStyles(SEVERITY_TONE[metricSeverity("co2", room.co2, thresholds)]).text
+                                          : "#94a3b8",
                                     }}
                                   >
                                     {room.co2 != null ? `${Math.round(room.co2)} ppm` : NO_DATA_LABEL}
@@ -785,7 +792,10 @@ export default function DevicesPage({
                                     style={{
                                       fontSize: 17,
                                       fontWeight: 800,
-                                      color: room.lpg != null ? "#0d9488" : "#94a3b8",
+                                      color:
+                                        room.lpg != null
+                                          ? badgeStyles(SEVERITY_TONE[metricSeverity("lpg", room.lpg, thresholds)]).text
+                                          : "#94a3b8",
                                     }}
                                   >
                                     {room.lpg != null ? `${Math.round(room.lpg)} ppm` : NO_DATA_LABEL}
@@ -798,7 +808,9 @@ export default function DevicesPage({
                                       fontSize: room.temp != null ? 17 : 12,
                                       fontWeight: 800,
                                       color:
-                                        room.temp != null && room.humidity != null ? "#0d9478" : "#94a3b8",
+                                        room.temp != null && room.humidity != null
+                                          ? badgeStyles(SEVERITY_TONE[metricSeverity("temp", room.temp, thresholds)]).text
+                                          : "#94a3b8",
                                     }}
                                   >
                                     {room.temp == null || room.humidity == null ? (

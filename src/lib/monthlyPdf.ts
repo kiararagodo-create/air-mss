@@ -40,12 +40,24 @@ function num(n: number | null | undefined, metric: MetricKey): string {
 /** Daily rows -> one point per day of month, in calendar order. */
 function toSeries(stats: MonthStats, metric: MetricKey): CanvasSeriesPoint[] {
   const avgKey: DailyMetricField = `${metric}_avg`;
-  const byDay = new Map(stats.daily.map((d) => [Number(d.day.slice(8, 10)), d]));
+  // d.day is a Postgres `date`, which arrives as "YYYY-MM-DD", but taking a
+  // fixed offset silently produces NaN for any other rendering (a timestamp,
+  // or a driver that returns an ISO string) and a NaN key would blank the
+  // whole series. Parse the leading ISO date portion instead.
+  const byDay = new Map(
+    stats.daily.map((d) => {
+      const iso = String(d.day).slice(0, 10);
+      return [Number(iso.slice(8, 10)), d] as const;
+    })
+  );
   const daysInMonth = new Date(Date.UTC(stats.year, stats.month, 0)).getUTCDate();
   const points: CanvasSeriesPoint[] = [];
   for (let d = 1; d <= daysInMonth; d++) {
     const row = byDay.get(d);
-    points.push({ day: d, value: row ? row[avgKey] : null });
+    // Coerce a missing/non-numeric aggregate to null so it renders as a gap
+    // rather than leaking undefined into the canvas scale.
+    const raw = row ? row[avgKey] : null;
+    points.push({ day: d, value: raw == null || !Number.isFinite(raw) ? null : raw });
   }
   return points;
 }
@@ -74,7 +86,7 @@ export function downloadMonthlyPdf(stats: MonthStats, meta: MonthlyPdfMeta): voi
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
   doc.setTextColor(...SLATE);
-  const th = stats.thresholds as unknown as Record<string, number>;
+  const th = stats.thresholds;
   const headerLines = [
     `${meta.deviceLabel}`,
     `${monthLabel} ${meta.year}`,
@@ -154,8 +166,16 @@ export function downloadMonthlyPdf(stats: MonthStats, meta: MonthlyPdfMeta): voi
   );
   y += 9;
 
+  // The canvas is rendered at 700x200 (aspect 3.5) and placed at the full
+  // content width. jsPDF stretches the image to whatever box it is given and
+  // does not preserve the aspect ratio, so the placement height has to be
+  // derived from the render size or every chart in the PDF comes out ~10%
+  // vertically stretched - meaning the danger line no longer sits where the
+  // Y-axis labels say it does.
+  const CHART_RENDER_W = 700;
+  const CHART_RENDER_H = 200;
   const CHART_W = CONTENT_W;
-  const CHART_H = 46;
+  const CHART_H = (CHART_RENDER_H / CHART_RENDER_W) * CHART_W;
   const CHART_GAP = 6;
   const CHART_LABEL = 6;
 
@@ -173,8 +193,8 @@ export function downloadMonthlyPdf(stats: MonthStats, meta: MonthlyPdfMeta): voi
       thresholdHigh: thresholdHigh ?? null,
       thresholdLow: thresholdLow ?? null,
       unit: METRIC_UNIT_SHORT[m],
-      width: 700,
-      height: 200,
+      width: CHART_RENDER_W,
+      height: CHART_RENDER_H,
     });
     if (!dataUrl) continue;
 
@@ -190,6 +210,8 @@ export function downloadMonthlyPdf(stats: MonthStats, meta: MonthlyPdfMeta): voi
     doc.setTextColor(30, 41, 59);
     doc.text(METRIC_LABEL_SHORT[m], MARGIN, y + 4);
 
+    // drawH === CHART_H by construction, but keeping the expression makes the
+    // placement visibly derived from the render aspect rather than a magic number.
     const drawH = (CHART_H / CHART_W) * CONTENT_W;
     doc.addImage(dataUrl, "PNG", MARGIN, y + CHART_LABEL, CONTENT_W, drawH, undefined, "FAST");
     y += CHART_LABEL + drawH + CHART_GAP;

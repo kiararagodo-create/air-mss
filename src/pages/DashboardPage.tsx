@@ -6,13 +6,14 @@ import {
   Building2,
   CheckCircle2,
   ChevronDown,
-  Droplets,
+  CircleSlash,
   ShieldCheck,
-  Thermometer,
   Wifi,
 } from "lucide-react";
 import DangerAlarmBanner from "../components/DangerAlarmBanner";
-import { NO_DATA_LABEL } from "../data/Data";
+import { NO_DATA_LABEL, actionMessage, type Room } from "../data/Data";
+import { useThresholdConfig, type ThresholdConfig } from "../hooks/useThresholdConfig";
+import { SEVERITY_LABEL, SEVERITY_TONE, type ReferenceCard } from "../lib/thresholdConfig";
 
 // Lightweight local replacements for ./ui to avoid missing-module errors.
 // Kept minimal — styling inline to match expected usage in this file.
@@ -86,136 +87,83 @@ function formatReadingAge(iso: string): string {
 }
 
 /**
- * Severity from ACTUAL measurements only.
+ * Severity from ACTUAL measurements and the SAVED thresholds only.
  *
- * - A null metric contributes nothing and is never treated as 0. Scoring a
- *   missing LPG reading as 0 ppm previously produced a green "OK" badge for a
- *   device that had never reported LPG at all.
- * - Boundary comparisons use `>=`, matching reading_is_danger() in SQL and
- *   isDangerRow() in the PDF generator, so a reading sitting exactly on a limit
- *   is classified identically everywhere.
- * - `hasData` is false when no measured metric exists, so callers can render an
- *   explicit no-data state instead of implying a safe reading.
+ * All grading lives in src/lib/thresholdConfig.ts so this page, the Devices
+ * page, the CSV export, the charts and the PDF cannot disagree. In particular:
+ *
+ * - The ESP32's own `severity` column is never read here. The firmware grades
+ *   against tiers compiled into it; re-tuning the dashboard configuration must
+ *   change what the dashboard says, and trusting the device would silently stop
+ *   that from happening.
+ * - All four metrics contribute, not just the two gases.
+ * - A null metric is not zero. `hasData` is false when nothing was measured, so
+ *   callers render an explicit no-data state instead of implying a safe reading.
  */
-function getStatus(room: Room, thresholds: Thresholds) {
-  const tier = (v: number | null | undefined, t: { warning: number; high: number; danger: number }) =>
-    v == null ? 0 : v >= t.danger ? 3 : v >= t.high ? 2 : v >= t.warning ? 1 : 0;
-
-  const co2Severity = tier(room.co2, thresholds.co2);
-  const lpgSeverity = tier(room.lpg ?? null, thresholds.lpg);
-  const severity = Math.max(co2Severity, lpgSeverity);
-  const tone: Tone[] = ["success", "warning", "high", "danger"];
-  const labels = ["OK", "Monitor", "Investigate", "DANGER"];
-
-  const hasData = room.co2 != null || (room.lpg ?? null) != null;
+function getStatus(room: Room, cfg: ThresholdConfig) {
+  const level = cfg.overall(room);
+  const hasData = cfg.hasData(room);
   return {
-    severity,
-    tone: tone[severity] as Tone,
-    label: hasData ? labels[severity] : NO_DATA_LABEL,
+    level,
+    // A device that has never reported grades "ok" by construction (every
+    // metric is null and null grades ok) but must never be painted the colour
+    // of a passing device. hasData gates the tone as well as the label.
+    tone: (hasData ? SEVERITY_TONE[level] : "neutral") as Tone,
+    label: hasData ? SEVERITY_LABEL[level] : NO_DATA_LABEL,
     hasData,
   };
 }
 
-type ActionPlan = { title: string; body: string };
-
-function actionMessage(room: Room, thresholds: Thresholds): ActionPlan {
-  const status = getStatus(room, thresholds);
-
-  if (!status.hasData) {
-    return {
-      title: "No sensor data received",
-      body: "This device has not reported a CO2 or LPG reading, so no condition can be assessed. " +
-        "This is an absence of data, not a safe reading. Check that the sensor is powered and reporting.",
-    };
-  }
-
-  const severity = status.severity;
-  if (severity === 0)
-    return {
-      title: "No action needed",
-      body: "CO2 and LPG levels are within safe limits. Continue monitoring the area.",
-    };
-  if (severity === 1)
-    return {
-      title: "Monitor conditions",
-      body: "Gas levels are elevated; observe the area closely and reduce exposure if possible.",
-    };
-  if (severity === 2)
-    return {
-      title: "Investigate immediately",
-      body: "High concentrations detected. Inspect the area immediately and address any sources.",
-    };
-  return {
-    title: "Evacuate area and ventilate",
-    body: "Dangerous gas levels detected. Evacuate immediately and ventilate the area before re-entry.",
-  };
-}
-
-// Computes a gas severity/tone/label from a single reading against its own
-// thresholds only - kept separate from getStatus() (which combines CO2 +
-// LPG for the overall room badge) so the CO2 gauge and LPG gauge can each
-// reflect their own reading independently, instead of one gas's danger
-// level bleeding color into the other's box.
-function getGasStatus(
+// Grades ONE metric against its own limits, so each panel reflects its own
+// reading instead of one metric's colour bleeding into another's box. Works for
+// all four metrics - the gases are one-sided, temperature and humidity are
+// two-sided - because the dispatch lives in the shared threshold module.
+function getMetricStatus(
+  metric: "co2" | "lpg" | "temp" | "humidity",
   value: number | null | undefined,
-  t: { warning: number; high: number; danger: number }
-): { severity: number; tone: Tone; label: string; hasData: boolean } {
+  cfg: ThresholdConfig
+): { tone: Tone; label: string; hasData: boolean } {
   if (value == null)
-    return { severity: 0, tone: "neutral", label: NO_DATA_LABEL, hasData: false };
-  // `>=`, matching getStatus() and the SQL/PDF danger comparison.
-  const severity = value >= t.danger ? 3 : value >= t.high ? 2 : value >= t.warning ? 1 : 0;
-  const tone: Tone[] = ["success", "warning", "high", "danger"];
-  const labels = ["OK", "Monitor", "Investigate", "DANGER"];
-  return { severity, tone: tone[severity], label: labels[severity], hasData: true };
+    return { tone: "neutral", label: NO_DATA_LABEL, hasData: false };
+  const level = cfg.severity(metric, value);
+  return { tone: SEVERITY_TONE[level], label: SEVERITY_LABEL[level], hasData: true };
 }
 
-// Local type definitions to avoid depending on AdminDashboard module.
-// Keep fields minimal to match usage in this file.
-type SensorName = string;
-export interface Room {
-  id: string;
-  name: string;
-  floor: string;
-  co2: number | null;
-  lpg?: number | null;
-  online: boolean;
-  co2Sensor: SensorName;
-  gasSensor?: SensorName | null;
-  // null = the sensor has not reported this metric. Must be rendered as a
-  // missing value, never as 0 and never as a safe-looking reading.
-  temp: number | null;
-  humidity: number | null;
-  /** Timestamp of the newest reading behind the values above, for staleness. */
-  lastReadingAt?: string | null;
-}
-
-export interface Thresholds {
-  co2: { warning: number; high: number; danger: number };
-  lpg: { warning: number; high: number; danger: number };
-  temp: { freezeBelow: number; coolBelow: number; heatAbove: number };
-  humidity: { dryBelow: number; lowBelow: number; moldAbove: number };
-}
+// The canonical Room / Thresholds types come from the data layer, which is also
+// where they are loaded from. This page previously kept its own narrower copies
+// so a room missing `lpg` or `length` would still typecheck; that let the page
+// grade readings against a different shape than the one actually saved.
+export type { Room, Thresholds } from "../data/Data";
 
 type Tone = "success" | "warning" | "high" | "danger" | "neutral";
 
 // Which summary box is active, drives the Monitored Rooms accordion filter.
-type SummaryFilter = "all" | "safe" | "warningHigh" | "danger" | null;
+type SummaryFilter = "all" | "safe" | "warningHigh" | "danger" | "noData" | null;
 
 interface DashboardPageProps {
   rooms: Room[];
   selectedId: string;
   setSelectedId: (id: string) => void;
-  thresholds: Thresholds;
+  /**
+   * No longer passed in. The configuration is read from the shared hook so this
+   * page cannot be handed a stale or hand-made copy that disagrees with the
+   * reference cards rendered from the saved row.
+   */
 }
 
 // A single tier used to color/label a gauge's threshold bar.
 type GaugeBreakpoint = { upper: number; tone: Tone; label: string; rangeText: string };
 
-function buildGaugeSegments(breakpoints: GaugeBreakpoint[], maxDisplay: number) {
-  let prev = 0;
+function buildGaugeSegments(breakpoints: GaugeBreakpoint[], maxDisplay: number, base = 0) {
+  // `base` is the value the bar starts at. It is 0 for the ppm metrics, but
+  // temperature and humidity are two-sided bands whose lower danger limit sits
+  // at 5 °C / 20 % RH - starting those bars at zero would squash the freeze and
+  // dry bands into an unreadable sliver.
+  let prev = base;
+  const span = maxDisplay - base;
   return breakpoints.map((bp) => {
     const upperClamped = bp.upper === Infinity ? maxDisplay : Math.min(bp.upper, maxDisplay);
-    const widthPct = Math.max(0, ((upperClamped - prev) / maxDisplay) * 100);
+    const widthPct = span > 0 ? Math.max(0, ((upperClamped - prev) / span) * 100) : 0;
     prev = upperClamped;
     return { ...bp, widthPct };
   });
@@ -227,16 +175,29 @@ function GaugePanel({
   breakpoints,
   maxDisplay,
   activeTone,
+  unit = "ppm",
+  base = 0,
+  statusLabel = null,
+  emptyHint,
+  digits = 0,
 }: {
   sensorLabel: string;
   value: number | null | undefined;
   breakpoints: GaugeBreakpoint[];
   maxDisplay: number;
   activeTone: Tone;
+  unit?: string;
+  base?: number;
+  statusLabel?: string | null;
+  /** Shown under the bar when there is no measurement. Must be precise. */
+  emptyHint?: string;
+  digits?: number;
 }) {
-  const segments = buildGaugeSegments(breakpoints, maxDisplay);
-  const hasValue = value != null;
-  const markerPct = hasValue ? clamp((value as number) / maxDisplay, 0, 1) * 100 : 0;
+  const segments = buildGaugeSegments(breakpoints, maxDisplay, base);
+  const hasValue = value != null && Number.isFinite(value);
+  const markerPct = hasValue
+    ? clamp(((value as number) - base) / (maxDisplay - base || 1), 0, 1) * 100
+    : 0;
 
   return (
     <div>
@@ -252,8 +213,13 @@ function GaugePanel({
             lineHeight: 1.2,
           }}
         >
-          {hasValue ? Math.round(value as number) : "N/A"}
-          {hasValue && <span style={{ fontSize: 15, color: "#64748b", fontWeight: 600 }}> ppm</span>}
+          {hasValue ? (digits > 0 ? (value as number).toFixed(digits) : Math.round(value as number)) : "N/A"}
+          {hasValue && <span style={{ fontSize: 15, color: "#64748b", fontWeight: 600 }}> {unit}</span>}
+        </div>
+        {/* Every panel carries an explicit grade, so a quiet metric still states
+            what it is doing instead of being inferred from its colour. */}
+        <div style={{ marginTop: 6, minHeight: 20, display: "flex", justifyContent: "center" }}>
+          {statusLabel && <Badge label={statusLabel} tone={activeTone} />}
         </div>
       </div>
 
@@ -310,17 +276,23 @@ function GaugePanel({
         ))}
       </div>
       {!hasValue && (
-        <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 6, textAlign: "center" }}>
-          No sensor installed
+        <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 6, textAlign: "center", lineHeight: 1.4 }}>
+          {emptyHint ?? "No reading received"}
         </div>
       )}
     </div>
   );
 }
 
-export default function DashboardPage({ rooms, selectedId, setSelectedId, thresholds }: DashboardPageProps) {
+export default function DashboardPage({ rooms, selectedId, setSelectedId }: DashboardPageProps) {
   const [activeFilter, setActiveFilter] = useState<SummaryFilter>(null);
   const [openRoomId, setOpenRoomId] = useState<string | null>(selectedId);
+
+  // The saved configuration and everything derived from it - guide copy, badge
+  // labels and tones, severity. Resolved before the early return below so the
+  // hook order is stable across renders.
+  const cfg = useThresholdConfig();
+  const thresholds = cfg.thresholds;
 
   // Empty state: no rooms registered yet — avoid crashing on rooms[0]/undefined.
   if (rooms.length === 0) {
@@ -353,17 +325,38 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
   }
 
   const selected = rooms.find((r) => r.id === selectedId) || rooms[0];
-  const status = getStatus(selected, thresholds);
-  const action = actionMessage(selected, thresholds);
-  const co2GasStatus = getGasStatus(selected.co2, thresholds.co2);
-  const lpgGasStatus = getGasStatus(selected.lpg, thresholds.lpg);
+  const status = getStatus(selected, cfg);
+  const action = actionMessage(selected, cfg.thresholds);
+  const co2GasStatus = getMetricStatus("co2", selected.co2, cfg);
+  const lpgGasStatus = getMetricStatus("lpg", selected.lpg, cfg);
+  const tempStatus = getMetricStatus("temp", selected.temp, cfg);
+  const humidityStatus = getMetricStatus("humidity", selected.humidity, cfg);
 
-  const safeRooms = rooms.filter((r) => getStatus(r, thresholds).severity === 0);
-  const warningHighRooms = rooms.filter((r) => {
-    const s = getStatus(r, thresholds).severity;
-    return s === 1 || s === 2;
+  // Is the hardware for this metric actually fitted to the selected room? The
+  // registry and the readings are separate facts: a room can have an LPG sensor
+  // listed and still never receive an LPG reading, and those two states need
+  // different wording.
+  const lpgFitted = !!selected.gasSensor;
+  const envFitted = !!selected.tempHumiditySensor;
+  const noReading = "Registered, but this device is not sending it. Check the sensor wiring and the firmware payload.";
+
+  // Buckets come from the computed grade, never from a device-supplied one.
+  //
+  // A room with no measurements at all grades "ok" because every metric is
+  // null, and null grades ok. Counting it under SAFE ROOMS would claim a device
+  // is safe on the basis of having never been measured. It gets its own bucket
+  // so the four cards still account for every registered room and the total is
+  // auditable against the device list.
+  const noDataRooms = rooms.filter((r) => !getStatus(r, cfg).hasData);
+  const safeRooms = rooms.filter((r) => {
+    const st = getStatus(r, cfg);
+    return st.hasData && st.level === "ok";
   });
-  const dangerRooms = rooms.filter((r) => getStatus(r, thresholds).severity === 3);
+  const warningHighRooms = rooms.filter((r) => {
+    const st = getStatus(r, cfg);
+    return st.hasData && (st.level === "warning" || st.level === "high");
+  });
+  const dangerRooms = rooms.filter((r) => getStatus(r, cfg).level === "danger");
 
   const summaryCards: { key: SummaryFilter; label: string; value: number; color: string; icon: React.ReactNode }[] = [
     { key: "all", label: "ROOMS MONITORED", value: rooms.length, color: "#2563eb", icon: <Building2 size={18} /> },
@@ -372,8 +365,19 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
     { key: "danger", label: "DANGER ROOMS", value: dangerRooms.length, color: "#dc2626", icon: <AlertOctagon size={18} /> },
   ];
 
+  if (noDataRooms.length > 0) {
+    summaryCards.splice(2, 0, {
+      key: "noData",
+      label: "NO SENSOR DATA",
+      value: noDataRooms.length,
+      color: "#64748b",
+      icon: <CircleSlash size={18} />,
+    });
+  }
+
   const filterRoomMap: Record<Exclude<SummaryFilter, null>, Room[]> = {
     all: rooms,
+    noData: noDataRooms,
     safe: safeRooms,
     warningHigh: warningHighRooms,
     danger: dangerRooms,
@@ -391,51 +395,56 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
     setOpenRoomId((prev) => (prev === room.id ? null : room.id));
   };
 
-  // CO2 gauge — 3 tiers, matching the ESP32 firmware's two cutoffs
-  // (CO2_SOFT_PPM logged only, CO2_URGENT_PPM sounds the physical buzzer).
+  // Gauge bands. Four segments per gas now that the configuration carries a
+  // real `high` tier between warning and danger; every upper bound and range
+  // string is read straight off the saved thresholds, so re-tuning a value on
+  // the Settings page redraws the bar rather than leaving a stale label on it.
   const co2Breakpoints: GaugeBreakpoint[] = [
     { upper: thresholds.co2.warning, tone: "success", label: "SAFE", rangeText: `< ${thresholds.co2.warning} ppm` },
-    { upper: thresholds.co2.danger, tone: "warning", label: "WARNING", rangeText: `${thresholds.co2.warning} - ${thresholds.co2.danger} ppm` },
-    { upper: Infinity, tone: "danger", label: "DANGER", rangeText: `> ${thresholds.co2.danger} ppm` },
+    { upper: thresholds.co2.high, tone: "warning", label: "WARNING", rangeText: `${thresholds.co2.warning} - ${thresholds.co2.high} ppm` },
+    { upper: thresholds.co2.danger, tone: "high", label: "HIGH", rangeText: `${thresholds.co2.high} - ${thresholds.co2.danger} ppm` },
+    { upper: Infinity, tone: "danger", label: "DANGER", rangeText: `>= ${thresholds.co2.danger} ppm` },
   ];
   const co2MaxDisplay = thresholds.co2.danger * 1.3;
 
   const lpgBreakpoints: GaugeBreakpoint[] = [
     { upper: thresholds.lpg.warning, tone: "success", label: "SAFE", rangeText: `< ${thresholds.lpg.warning} ppm` },
     { upper: thresholds.lpg.high, tone: "warning", label: "LOW LEAK", rangeText: `${thresholds.lpg.warning} - ${thresholds.lpg.high} ppm` },
-    { upper: thresholds.lpg.danger, tone: "high", label: "MODERATE LEAK", rangeText: `${thresholds.lpg.high} - ${thresholds.lpg.danger} ppm` },
-    { upper: Infinity, tone: "danger", label: "DANGEROUS", rangeText: `> ${thresholds.lpg.danger} ppm` },
+    { upper: thresholds.lpg.danger, tone: "high", label: "ALARM", rangeText: `${thresholds.lpg.high} - ${thresholds.lpg.danger} ppm` },
+    { upper: Infinity, tone: "danger", label: "CRITICAL", rangeText: `>= ${thresholds.lpg.danger} ppm` },
   ];
   const lpgMaxDisplay = thresholds.lpg.danger * 1.2;
 
-  // Reference guide cards at the bottom of the page (unaffected by the
-  // currently selected room — these are static thresholds).
-  const co2Guide: [string, string, Tone][] = [
-    [`< ${thresholds.co2.warning} ppm`, "Safe / Good", "success"],
-    [`${thresholds.co2.warning} - ${thresholds.co2.danger} ppm`, "Warning", "warning"],
-    [`> ${thresholds.co2.danger} ppm`, "Danger", "danger"],
+  // Temperature and humidity get the same full-width gauge treatment as the
+  // gases. They used to be two small grey boxes underneath, which read as
+  // footnotes rather than as sensors - and made a DHT22 that was sending
+  // nothing look like a panel that simply was not there.
+  //
+  // Both bars start below their own lower danger limit rather than at zero, so
+  // the freeze / dry band is wide enough to see.
+  const tempBreakpoints: GaugeBreakpoint[] = [
+    { upper: thresholds.temp.freezeBelow, tone: "danger", label: "FREEZE", rangeText: `< ${thresholds.temp.freezeBelow}°C` },
+    { upper: thresholds.temp.coolBelow, tone: "warning", label: "COOL", rangeText: `${thresholds.temp.freezeBelow} - ${thresholds.temp.coolBelow}°C` },
+    { upper: thresholds.temp.heatAbove, tone: "success", label: "COMFORT", rangeText: `${thresholds.temp.coolBelow} - ${thresholds.temp.heatAbove}°C` },
+    { upper: Infinity, tone: "danger", label: "HEAT", rangeText: `> ${thresholds.temp.heatAbove}°C` },
   ];
+  const tempBase = thresholds.temp.freezeBelow - 8;
+  const tempMaxDisplay = thresholds.temp.heatAbove + 8;
 
-  const lpgGuide: [string, string, Tone][] = [
-    [`< ${thresholds.lpg.warning} ppm`, "Safe", "success"],
-    [`${thresholds.lpg.warning} - ${thresholds.lpg.high} ppm`, "Low Leak", "warning"],
-    [`${thresholds.lpg.high} - ${thresholds.lpg.danger} ppm`, "Moderate Leak", "high"],
-    [`> ${thresholds.lpg.danger} ppm`, "Dangerous", "danger"],
+  const humidityBreakpoints: GaugeBreakpoint[] = [
+    { upper: thresholds.humidity.dryBelow, tone: "danger", label: "DRY", rangeText: `< ${thresholds.humidity.dryBelow}%` },
+    { upper: thresholds.humidity.lowBelow, tone: "warning", label: "LOW", rangeText: `${thresholds.humidity.dryBelow} - ${thresholds.humidity.lowBelow}%` },
+    { upper: thresholds.humidity.moldAbove, tone: "success", label: "COMFORT", rangeText: `${thresholds.humidity.lowBelow} - ${thresholds.humidity.moldAbove}%` },
+    { upper: Infinity, tone: "danger", label: "MOLD", rangeText: `> ${thresholds.humidity.moldAbove}%` },
   ];
+  const humidityBase = thresholds.humidity.dryBelow - 8;
+  const humidityMaxDisplay = thresholds.humidity.moldAbove + 8;
 
-  const tempGuide: [string, string, Tone][] = [
-    [`< ${thresholds.temp.freezeBelow}°C`, "Too Cold", "danger"],
-    [`${thresholds.temp.freezeBelow}°C - ${thresholds.temp.coolBelow}°C`, "Cool", "warning"],
-    [`${thresholds.temp.coolBelow}°C - ${thresholds.temp.heatAbove}°C`, "Comfortable", "success"],
-    [`> ${thresholds.temp.heatAbove}°C`, "Too Hot", "danger"],
-  ];
-
-  const humidityGuide: [string, string, Tone][] = [
-    [`< ${thresholds.humidity.dryBelow}%`, "Too Dry", "danger"],
-    [`${thresholds.humidity.dryBelow}% - ${thresholds.humidity.lowBelow}%`, "Dry", "warning"],
-    [`${thresholds.humidity.lowBelow}% - ${thresholds.humidity.moldAbove}%`, "Comfortable", "success"],
-    [`> ${thresholds.humidity.moldAbove}%`, "Too Humid", "danger"],
-  ];
+  // Reference guide cards. Every range, label, standards name and footnote is
+  // generated from the saved thresholds - see buildReferenceGuides() in
+  // src/lib/thresholdConfig.ts. Nothing here is a literal, so a saved change
+  // propagates to the cards without touching this file.
+  const guides = cfg.guides;
 
   return (
     <div>
@@ -479,14 +488,9 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
         }
         .air-gauge-grid {
           display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 24px;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 24px 24px;
           margin: 18px 0;
-        }
-        .air-detail-subgrid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 12px;
         }
         .air-guide-grid {
           display: grid;
@@ -522,9 +526,6 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
         }
         @media (max-width: 480px) {
           .air-gauge-grid {
-            grid-template-columns: 1fr;
-          }
-          .air-detail-subgrid {
             grid-template-columns: 1fr;
           }
         }
@@ -591,67 +592,48 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
 
         <div className="air-gauge-grid">
           <GaugePanel
-            sensorLabel={`CO2 \u00b7 ${selected.co2Sensor}`}
+            sensorLabel={`CO2 \u00b7 ${selected.co2Sensor || "no sensor"}`}
             value={selected.co2}
             breakpoints={co2Breakpoints}
             maxDisplay={co2MaxDisplay}
             activeTone={co2GasStatus.tone}
+            statusLabel={co2GasStatus.hasData ? co2GasStatus.label : null}
+            emptyHint={noReading}
           />
           <GaugePanel
-            sensorLabel={`LPG \u00b7 ${selected.gasSensor ?? "No sensor"}`}
+            sensorLabel={`LPG \u00b7 ${selected.gasSensor || "no sensor"}`}
             value={selected.lpg}
             breakpoints={lpgBreakpoints}
             maxDisplay={lpgMaxDisplay}
             activeTone={lpgGasStatus.tone}
+            statusLabel={lpgGasStatus.hasData ? lpgGasStatus.label : null}
+            emptyHint={lpgFitted ? noReading : "No LPG sensor registered for this room."}
+          />
+          <GaugePanel
+            sensorLabel={`TEMPERATURE \u00b7 ${selected.tempHumiditySensor || "no sensor"}`}
+            value={selected.temp}
+            breakpoints={tempBreakpoints}
+            maxDisplay={tempMaxDisplay}
+            base={tempBase}
+            digits={1}
+            unit="°C"
+            activeTone={tempStatus.tone}
+            statusLabel={tempStatus.hasData ? tempStatus.label : null}
+            emptyHint={envFitted ? noReading : "No temperature/humidity sensor registered for this room."}
+          />
+          <GaugePanel
+            sensorLabel={`HUMIDITY \u00b7 ${selected.tempHumiditySensor || "no sensor"}`}
+            value={selected.humidity}
+            breakpoints={humidityBreakpoints}
+            maxDisplay={humidityMaxDisplay}
+            base={humidityBase}
+            unit="% RH"
+            activeTone={humidityStatus.tone}
+            statusLabel={humidityStatus.hasData ? humidityStatus.label : null}
+            emptyHint={envFitted ? noReading : "No temperature/humidity sensor registered for this room."}
           />
         </div>
 
-        <div className="air-detail-subgrid">
-          <div
-            style={{
-              background: "#f8fafc",
-              borderRadius: 10,
-              padding: 12,
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-            }}
-          >
-            <Thermometer size={16} color="#0d9488" />
-            <div>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8" }}>TEMPERATURE</div>
-              <div style={{ fontSize: 15, fontWeight: 800, color: "#0f172a" }}>
-                {selected.temp !== null && selected.temp !== undefined ? (
-                  <>{selected.temp.toFixed(1)} &deg;C</>
-                ) : (
-                  <span style={{ color: "#94a3b8", fontSize: 12.5 }}>{NO_DATA_LABEL}</span>
-                )}
-              </div>
-            </div>
-          </div>
-          <div
-            style={{
-              background: "#f8fafc",
-              borderRadius: 10,
-              padding: 12,
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-            }}
-          >
-            <Droplets size={16} color="#0d9488" />
-            <div>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8" }}>HUMIDITY</div>
-              <div style={{ fontSize: 15, fontWeight: 800, color: "#0f172a" }}>
-                {selected.humidity !== null && selected.humidity !== undefined ? (
-                  <>{Math.round(selected.humidity)}%</>
-                ) : (
-                  <span style={{ color: "#94a3b8", fontSize: 12.5 }}>{NO_DATA_LABEL}</span>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
 
       {/* Action plan for the currently selected room */}
@@ -727,13 +709,15 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
           <div style={{ fontSize: 12.5, color: "#94a3b8" }}>No rooms match this filter.</div>
         ) : (
           listRooms.map((r) => {
-            const st = getStatus(r, thresholds);
+            const st = getStatus(r, cfg);
             const isOpen = openRoomId === r.id;
             const isSelected = r.id === selected.id;
             const roomAction = actionMessage(r, thresholds);
-            // Per-row gas tones, so one row's colour cannot bleed into another.
-            const rowCo2Status = getGasStatus(r.co2, thresholds.co2);
-            const rowLpgStatus = getGasStatus(r.lpg ?? null, thresholds.lpg);
+            // Per-row tones, so one row's colour cannot bleed into another.
+            const rowCo2Status = getMetricStatus("co2", r.co2, cfg);
+            const rowLpgStatus = getMetricStatus("lpg", r.lpg, cfg);
+            const rowTempStatus = getMetricStatus("temp", r.temp, cfg);
+            const rowHumidityStatus = getMetricStatus("humidity", r.humidity, cfg);
             return (
               <div
                 key={r.id}
@@ -767,11 +751,20 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                   <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
                     <span style={{ fontSize: 12.5, color: "#334155", display: "none" }} />
                     <div style={{ textAlign: "right", fontSize: 12 }}>
+                        {/* All four metrics, so the collapsed row is as
+                            informative as the expanded one. A metric with no
+                            reading says so rather than being omitted. */}
                         <div style={{ color: r.co2 != null ? "#334155" : "#94a3b8" }}>
-                          {r.co2 != null ? `${Math.round(r.co2)} CO2 ppm` : NO_DATA_LABEL}
+                          {r.co2 != null ? `${Math.round(r.co2)} CO2 ppm` : "CO2 —"}
                         </div>
                         <div style={{ color: r.lpg != null ? "#334155" : "#94a3b8" }}>
-                          {r.lpg != null ? `${Math.round(r.lpg)} LPG ppm` : NO_DATA_LABEL}
+                          {r.lpg != null ? `${Math.round(r.lpg)} LPG ppm` : "LPG —"}
+                        </div>
+                        <div style={{ color: r.temp != null ? "#334155" : "#94a3b8" }}>
+                          {r.temp != null ? `${r.temp.toFixed(1)} °C` : "Temp —"}
+                        </div>
+                        <div style={{ color: r.humidity != null ? "#334155" : "#94a3b8" }}>
+                          {r.humidity != null ? `${Math.round(r.humidity)} % RH` : "Humidity —"}
                         </div>
                       </div>
                     <Badge label={st.label} tone={st.tone} />
@@ -810,13 +803,27 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
                           {r.lpg != null ? `${Math.round(r.lpg)} ppm` : NO_DATA_LABEL}
                         </div>
                       </div>
-                      <div style={{ background: "#f8fafc", borderRadius: 8, padding: 10 }}>
+                      <div
+                        style={{
+                          background: rowTempStatus.hasData ? (toneBg[rowTempStatus.tone] ?? "#f8fafc") : "#f1f5f9",
+                          borderRadius: 8,
+                          padding: 10,
+                        }}
+                      >
                         <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>TEMPERATURE</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
                           {r.temp != null ? `${r.temp.toFixed(1)} °C` : NO_DATA_LABEL}
                         </div>
                       </div>
-                      <div style={{ background: "#f8fafc", borderRadius: 8, padding: 10 }}>
+                      <div
+                        style={{
+                          background: rowHumidityStatus.hasData
+                            ? (toneBg[rowHumidityStatus.tone] ?? "#f8fafc")
+                            : "#f1f5f9",
+                          borderRadius: 8,
+                          padding: 10,
+                        }}
+                      >
                         <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>HUMIDITY</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
                           {r.humidity != null ? `${Math.round(r.humidity)}%` : NO_DATA_LABEL}
@@ -872,128 +879,71 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId, thresh
         )}
       </div>
 
-      {/* Reference guides */}
+      {/* Reference guides. `guides` is generated from the saved thresholds, so
+          these cards are rewritten by a save on the Settings page - including
+          the standards names, the band ranges and the footnotes. */}
       <div className="air-guide-grid">
-        <div className="air-card" style={{ marginBottom: 0 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 10 }}>
-            CO2 REFERENCE GUIDE
-          </div>
-          {co2Guide.map(([range, label, tone]) => (
-            <div
-              key={range}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                fontSize: 12.5,
-                padding: "5px 0",
-              }}
-            >
-              <span style={{ color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
-                <ToneDot tone={tone} /> {range}
-              </span>
-              <span style={{ color: badgeStyles(tone).text, fontWeight: 700 }}>{label}</span>
-            </div>
-          ))}
-          <div
-            style={{
-              fontSize: 10.5,
-              color: "#94a3b8",
-              marginTop: 6,
-              borderTop: "1px solid #f1f5f9",
-              paddingTop: 6,
-            }}
-          >
-            &gt;{thresholds.co2.danger} ppm triggers the physical alarm. (OSHA's 8-hour occupational
-            exposure limit is 5000 ppm — this threshold is set lower for earlier warning.)
-          </div>
-        </div>
-
-        <div className="air-card" style={{ marginBottom: 0 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 10 }}>
-            LPG REFERENCE GUIDE
-          </div>
-          {lpgGuide.map(([range, label, tone]) => (
-            <div
-              key={range}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                fontSize: 12.5,
-                padding: "5px 0",
-              }}
-            >
-              <span style={{ color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
-                <ToneDot tone={tone} /> {range}
-              </span>
-              <span style={{ color: badgeStyles(tone).text, fontWeight: 700 }}>{label}</span>
-            </div>
-          ))}
-          <div
-            style={{
-              fontSize: 10.5,
-              color: "#94a3b8",
-              marginTop: 6,
-              borderTop: "1px solid #f1f5f9",
-              paddingTop: 6,
-            }}
-          >
-            Lower explosive limit (LEL) is roughly 21,000 ppm (~2.1% by volume) - extreme danger.
-          </div>
-        </div>
-
-        <div className="air-card" style={{ marginBottom: 0 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 10 }}>
-            TEMP & HUMIDITY REFERENCE GUIDE (DHT22)
-          </div>
-          {tempGuide.map(([range, label, tone]) => (
-            <div
-              key={range}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                fontSize: 12.5,
-                padding: "5px 0",
-              }}
-            >
-              <span style={{ color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
-                <ToneDot tone={tone} /> {range}
-              </span>
-              <span style={{ color: badgeStyles(tone).text, fontWeight: 700 }}>{label}</span>
-            </div>
-          ))}
-          <div
-            style={{
-              fontSize: 10.5,
-              color: "#94a3b8",
-              margin: "6px 0",
-              borderTop: "1px solid #f1f5f9",
-              paddingTop: 6,
-            }}
-          >
-            Humidity
-          </div>
-          {humidityGuide.map(([range, label, tone]) => (
-            <div
-              key={range}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                fontSize: 12.5,
-                padding: "5px 0",
-              }}
-            >
-              <span style={{ color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
-                <ToneDot tone={tone} /> {range}
-              </span>
-              <span style={{ color: badgeStyles(tone).text, fontWeight: 700 }}>{label}</span>
-            </div>
-          ))}
-        </div>
+        <GuideCard card={guides.co2} />
+        <GuideCard card={guides.lpg} />
+        <GuideCard card={guides.temp} />
+        <GuideCard card={guides.humidity} />
       </div>
     </div>
   );
 }
+
+/**
+ * One reference card: title, the standard it comes from, the generated bands,
+ * and any generated footnotes.
+ *
+ * Deliberately takes the whole card object rather than a title and two arrays,
+ * so adding a band or a note is a change to thresholdConfig.ts alone and
+ * cannot be forgotten in a third copy of the markup.
+ */
+function GuideCard({ card }: { card: ReferenceCard }) {
+  return (
+    <div className="air-card" style={{ marginBottom: 0 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 2 }}>
+        {card.title}
+      </div>
+      <div style={{ fontSize: 10.5, color: "#0d9488", fontWeight: 700, marginBottom: 8 }}>
+        {card.standard}
+      </div>
+      {card.rows.map((row) => (
+        <div
+          key={`${row.range}|${row.label}`}
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 12.5,
+            padding: "5px 0",
+          }}
+        >
+          <span style={{ color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
+            <ToneDot tone={row.tone} /> {row.range}
+          </span>
+          <span style={{ color: badgeStyles(row.tone).text, fontWeight: 700, textAlign: "right" }}>
+            {row.label}
+          </span>
+        </div>
+      ))}
+      {card.deviceNote && (
+        <div style={footnoteStyle}>
+          {card.deviceNote}
+        </div>
+      )}
+      {card.footnote && <div style={footnoteStyle}>{card.footnote}</div>}
+    </div>
+  );
+}
+
+const footnoteStyle: React.CSSProperties = {
+  fontSize: 10.5,
+  color: "#94a3b8",
+  marginTop: 6,
+  borderTop: "1px solid #f1f5f9",
+  paddingTop: 6,
+  lineHeight: 1.5,
+};

@@ -11,23 +11,27 @@ export type SensorMetric = "co2" | "lpg" | "temp" | "humidity";
 
 // ---- Threshold constants — FALLBACKS ONLY ----
 //
-// These are the built-in defaults and are NOT what your deployment is using
-// once an admin has edited the safety limits. They exist only so a chart has
-// something sensible to draw before the configured values are loaded.
+// These are NOT what your deployment is using once an admin has edited the
+// safety limits. They exist only so a chart has something sensible to draw
+// before the configured values have loaded.
 //
+// They are derived from DEFAULT_THRESHOLDS rather than written out as literals,
+// so the fallback can never disagree with the seed used for first-time setup.
 // Real threshold lines must come from the `thresholds` object held in
 // RoomsContext (the `platform_thresholds` table). Drawing these instead meant
 // the history chart's danger line could contradict the severity the same screen
 // reported from the configured thresholds. Pass the live values into
 // computeYAxisRange() / dangerThreshold() rather than relying on these.
-export const CO2_WARN = 1000;
-export const CO2_DANGER = 3500;
-export const LPG_WARN = 1000;
-export const LPG_DANGER = 5000;
-export const TEMP_DANGER_LOW = 5;
-export const TEMP_DANGER_HIGH = 35;
-export const HUM_DANGER_LOW = 20;
-export const HUM_DANGER_HIGH = 80;
+import { DEFAULT_THRESHOLDS } from "../data/Data";
+
+export const CO2_WARN = DEFAULT_THRESHOLDS.co2.warning;
+export const CO2_DANGER = DEFAULT_THRESHOLDS.co2.danger;
+export const LPG_WARN = DEFAULT_THRESHOLDS.lpg.warning;
+export const LPG_DANGER = DEFAULT_THRESHOLDS.lpg.danger;
+export const TEMP_DANGER_LOW = DEFAULT_THRESHOLDS.temp.freezeBelow;
+export const TEMP_DANGER_HIGH = DEFAULT_THRESHOLDS.temp.heatAbove;
+export const HUM_DANGER_LOW = DEFAULT_THRESHOLDS.humidity.dryBelow;
+export const HUM_DANGER_HIGH = DEFAULT_THRESHOLDS.humidity.moldAbove;
 
 // ---- Human-readable labels ----
 export const METRIC_LABEL: Record<SensorMetric, string> = {

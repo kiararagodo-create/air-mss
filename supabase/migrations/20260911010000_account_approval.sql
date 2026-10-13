@@ -43,15 +43,19 @@ create policy "users can read own notifications"
   on public.notifications
   for select
   to authenticated
-  using (auth.uid() = user_id);
+  using (auth.uid()::text = user_id);
 
 drop policy if exists "users can update own notifications" on public.notifications;
 create policy "users can update own notifications"
   on public.notifications
   for update
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
+to authenticated
+  -- notifications.user_id is text (FK to profiles.id, which is text) while
+  -- auth.uid() returns uuid. PostgreSQL has no uuid = text operator, so an
+  -- uncast comparison raises on every read and silently disables the whole
+  -- notification feature. The cast must stay.
+  using (auth.uid()::text = user_id)
+  with check (auth.uid()::text = user_id);
 
 -- Only the service role (Edge Functions) writes notifications.
 drop policy if exists "service role writes notifications" on public.notifications;

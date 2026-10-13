@@ -11,7 +11,7 @@
 //
 // Every day and month boundary is Asia/Manila.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import ReportCalendar from "../../components/ReportCalendar";
 import DailyReportPanel from "../../components/DailyReportPanel";
@@ -89,23 +89,30 @@ export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
     [reportThresholds]
   );
 
-  const loadCalendar = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const rows = await fetchCalendarMonth(monthStart, effectiveDeviceId, rpcThresholds);
-      setDays(rows);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load the calendar.");
-      setDays([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [monthStart, effectiveDeviceId, rpcThresholds, refreshKey]);
-
   useEffect(() => {
-    loadCalendar();
-  }, [loadCalendar]);
+    // Cancellable so that rapid month-arrow clicks, which fire overlapping
+    // report_calendar_month RPCs, cannot land out of order and leave one
+    // month's counts under another month's header.
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const rows = await fetchCalendarMonth(monthStart, effectiveDeviceId, rpcThresholds);
+        if (!cancelled) setDays(rows);
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to load the calendar.");
+          setDays([]);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [monthStart, effectiveDeviceId, rpcThresholds, refreshKey]);
 
   // Changing year moves the calendar to January of that year, and clears the
   // selected day so a stale day from another year cannot be shown.
@@ -113,16 +120,23 @@ export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
     setYear(next);
     setMonthStart(`${next}-01-01`);
     setSelectedDay(null);
+    setDays([]);
   }
 
   function handleMonthChange(next: string) {
     setMonthStart(next);
     setSelectedDay(null);
+    // `days` still holds the previous month's YYYY-MM-DD keys. Until the new
+    // month resolves, every cell would fail its lookup and render as "no
+    // readings recorded", which reads as data loss rather than as loading.
+    setDays([]);
   }
 
   function handleDeviceChange(next: string) {
     setDeviceId(next);
     setSelectedDay(null);
+    // Same reason: never show the previous device's counts under the new name.
+    setDays([]);
   }
 
   return (

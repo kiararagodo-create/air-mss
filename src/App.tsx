@@ -18,15 +18,8 @@ import ResetPasswordPage from "./pages/Resetpasswordpage";
 // while the real values come from RoomsContext/AuthContext instead of the
 // old {} as any / [] as any placeholders.
 function DashboardRoute() {
-  const { rooms, selectedId, setSelectedId, thresholds } = useRooms();
-  return (
-    <DashboardPage
-      rooms={rooms}
-      selectedId={selectedId}
-      setSelectedId={setSelectedId}
-      thresholds={thresholds}
-    />
-  );
+  const { rooms, selectedId, setSelectedId } = useRooms();
+  return <DashboardPage rooms={rooms} selectedId={selectedId} setSelectedId={setSelectedId} />;
 }
 
 function DevicesRoute() {
@@ -95,9 +88,7 @@ function SettingsRoute() {
     <SettingsPage
       setSettings={setSettings}
       thresholds={thresholds}
-      setThresholds={(nextThresholds) =>
-        setThresholds(nextThresholds as Parameters<typeof setThresholds>[0])
-      }
+      setThresholds={setThresholds}
       user={user}
     />
   );

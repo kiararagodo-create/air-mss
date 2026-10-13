@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import type { Room, Thresholds } from "../data/Data";
 import { DEFAULT_THRESHOLDS } from "../data/Data";
 import { supabase } from "../lib/supabase";
@@ -16,7 +16,12 @@ interface RoomsContextValue {
   selectedId: string;
   setSelectedId: (id: string) => void;
   thresholds: Thresholds;
-  setThresholds: (t: Thresholds) => void;
+  /**
+   * Save a configuration change. Resolves once the write has been attempted;
+   * `error` is non-null when the database rejected it, in which case the
+   * on-screen value has been rolled back to the previously saved one.
+   */
+  setThresholds: (t: Thresholds) => Promise<{ error: string | null }>;
   settings: AppSettings;
   setSettings: (s: AppSettings) => void;
   toggleOnline: (id: string) => void;
@@ -58,8 +63,12 @@ interface RoomRow {
 function rowToRoom(row: RoomRow): Room {
   return {
     id: row.id,
-    name: row.name,
-    floor: row.floor,
+    // `floor` and `name` are dereferenced with .toUpperCase() by the UI. A row
+    // edited directly in the Supabase table editor can carry a NULL here, which
+    // would throw during render and white-screen the dashboard. Coerce like
+    // co2_sensor is, rather than asserting non-null in the type.
+    name: row.name ?? "",
+    floor: row.floor ?? "",
     co2Sensor: row.co2_sensor ?? "",
     gasSensor: row.gas_sensor,
     tempHumiditySensor: row.temp_humidity_sensor,
@@ -121,11 +130,37 @@ interface ReadingRow {
 // How stale a reading can be before we consider that device offline.
 const OFFLINE_THRESHOLD_MS = 30_000; // 30s
 
+// Tolerance for clock skew between the browser, Supabase's clock and an ESP32
+// with no RTC. Without a lower bound on the age, a device whose clock runs
+// even slightly fast reads as permanently online forever - including one that
+// died weeks ago - because the age never goes positive.
+const MAX_FUTURE_SKEW_MS = 60_000;
+
+/**
+ * True when a reading is recent enough that its device should read as online.
+ *
+ * `created_at` comes from the database, so it is authoritative in principle,
+ * but the row travels through the device clock and the browser clock and either
+ * can drift. A reading dated in the future is treated as fresh rather than
+ * being rejected outright.
+ */
+function nowMinusReadingMs(created_at: string): boolean {
+  const age = Date.now() - new Date(created_at).getTime();
+  return age < OFFLINE_THRESHOLD_MS && age > -MAX_FUTURE_SKEW_MS;
+}
+
 export function RoomsProvider({ children }: { children: ReactNode }) {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string>("");
   const [thresholds, setThresholds] = useState<Thresholds>(DEFAULT_THRESHOLDS);
+  // Mirror of `thresholds` for use inside callbacks that must not re-create
+  // themselves (and therefore must not close over a stale value) on every
+  // keystroke. Lets a failed save roll back to what is actually on screen.
+  const thresholdsRef = useRef(thresholds);
+  useEffect(() => {
+    thresholdsRef.current = thresholds;
+  }, [thresholds]);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
 
   // ---------- Persistent safety thresholds (Supabase "platform_thresholds") ----------
@@ -149,7 +184,14 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
     };
   }
 
-  async function loadThresholds(): Promise<Thresholds> {
+  /**
+   * Read the saved configuration.
+   *
+   * Memoised because the realtime subscription below depends on it: an
+   * unmemoised copy would re-create and re-subscribe the channel on every
+   * render, which drops events and leaks a subscription per render.
+   */
+  const loadThresholds = useCallback(async (): Promise<Thresholds> => {
     const { data, error } = await supabase
       .from("platform_thresholds")
       .select("*")
@@ -161,9 +203,18 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
     }
     if (!data) return DEFAULT_THRESHOLDS;
     return rowToThresholds(data as any);
-  }
+  }, []);
 
-  async function persistThresholds(next: Thresholds): Promise<void> {
+  /**
+   * Write the configuration back.
+   *
+   * Returns the Supabase error instead of only logging it. The Settings page
+   * optimistically swaps in the new values so the form feels instant, which
+   * means a rejected write - an ascending-order CHECK constraint, or an RLS
+   * rejection because the caller is not an active approved admin - would
+   * otherwise leave the screen showing values that were never persisted.
+   */
+  async function persistThresholds(next: Thresholds): Promise<string | null> {
     const now = new Date().toISOString();
     const row = {
       id: 1,
@@ -186,7 +237,7 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
       .upsert(row, { onConflict: "id" });
     if (error) {
       console.error("Failed to persist platform thresholds:", error.message);
-      return;
+      return error.message;
     }
 
     // Append to threshold_history in the same change.
@@ -199,12 +250,24 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
     //
     // Only write when something actually changed, otherwise every save would
     // add a duplicate history row.
-    const { data: previous } = await supabase
+    //
+    // threshold_history is optional (it arrives with the monthly-reporting
+    // migrations, which are not applied to every project), so its absence is
+    // not an error and never blocks the live configuration.
+    const { data: previous, error: historyReadError } = await supabase
       .from("threshold_history")
       .select("*")
       .order("effective_from", { ascending: false })
       .limit(1)
       .maybeSingle();
+
+    if (historyReadError) {
+      console.warn(
+        "threshold_history unavailable; the live thresholds saved but no history row was recorded:",
+        historyReadError.message
+      );
+      return null;
+    }
 
     const changed =
       !previous ||
@@ -221,7 +284,7 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
       Number(previous.humidity_low_below) !== Number(next.humidity.lowBelow) ||
       Number(previous.humidity_mold_above) !== Number(next.humidity.moldAbove);
 
-    if (!changed) return;
+    if (!changed) return null;
 
     const { error: historyError } = await supabase.from("threshold_history").insert({
       // Spelled out rather than spread from `row`, because threshold_history has
@@ -250,13 +313,32 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
         historyError.message
       );
     }
+
+    return null;
   }
 
-  // Override setThresholds so every update is also written back to the DB.
-  const setThresholdsPersist = useCallback((next: Thresholds) => {
-    setThresholds(next);
-    persistThresholds(next);
-  }, []);
+  /**
+   * Persist a configuration change.
+   *
+   * Applies it locally first so the Settings page and every card react at once,
+   * then writes through. On failure the previous value is restored, because
+   * leaving the optimistic value on screen would show a configuration that was
+   * never saved and that the next reload would silently contradict.
+   */
+  const setThresholdsPersist = useCallback(
+    async (next: Thresholds): Promise<{ error: string | null }> => {
+      const previousValue = thresholdsRef.current;
+      setThresholds(next);
+
+      const error = await persistThresholds(next);
+      if (error) {
+        setThresholds(previousValue);
+        return { error };
+      }
+      return { error: null };
+    },
+    []
+  );
 
   // ---------- Room registry (Supabase "rooms" table) ----------
 
@@ -311,6 +393,14 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
                     online: existing.online,
                     co2: existing.co2,
                     lpg: existing.lpg,
+                    // rowToRoom() always sets lastReadingAt: null because the
+                    // rooms table has no reading timestamp. Spreading `updated`
+                    // re-introduces that null, so it has to be carried over
+                    // explicitly like every other live field - otherwise any
+                    // unrelated rooms UPDATE (toggling a siren, editing a
+                    // name) resets a healthy device to "no reading ever
+                    // received".
+                    lastReadingAt: existing.lastReadingAt,
                   }
                 : updated;
               return exists ? prev.map((r) => (r.id === merged.id ? merged : r)) : [...prev, merged];
@@ -375,9 +465,14 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
       // No readings have EVER been received for this device. Every live metric
       // stays null so the UI reports "No sensor data recorded" rather than a
       // fabricated or zero value.
+      //
+      // Guarded by "we have never shown one for this device": a request issued
+      // before the device's first reading can resolve after it, and blanking
+      // live values here would make a healthy new device claim it has never
+      // reported.
       setRooms((prev) =>
         prev.map((r) =>
-          r.deviceId === deviceId
+          r.deviceId === deviceId && r.lastReadingAt === null
             ? { ...r, co2: null, lpg: null, temp: null, humidity: null, online: false, lastReadingAt: null }
             : r
         )
@@ -385,25 +480,33 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
       return;
     }
 
-    const isRecent = Date.now() - new Date(data.created_at).getTime() < OFFLINE_THRESHOLD_MS;
+    const isRecent = nowMinusReadingMs(data.created_at);
+    const incomingMs = new Date(data.created_at).getTime();
 
     // Assign the sensor's values verbatim. A NULL in the reading row stays
     // NULL - it is not replaced by a previous value or a zero, because the
     // sensor genuinely returned nothing for that metric.
+    //
+    // Only ever move forward in time. The realtime INSERT handler and this
+    // poller both write the same room, so whichever response happens to land
+    // last wins unless the merge itself is monotonic. Without this the
+    // dashboard visibly rolls back one reading whenever a poll that was
+    // dispatched earlier resolves after a newer realtime event.
     setRooms((prev) =>
-      prev.map((r) =>
-        r.deviceId === deviceId
-          ? {
-              ...r,
-              lpg: data.lpg ?? null,
-              co2: data.co2 ?? null,
-              temp: data.temp ?? null,
-              humidity: data.humidity ?? null,
-              online: isRecent,
-              lastReadingAt: data.created_at,
-            }
-          : r
-      )
+      prev.map((r) => {
+        if (r.deviceId !== deviceId) return r;
+        const currentMs = r.lastReadingAt ? new Date(r.lastReadingAt).getTime() : null;
+        if (currentMs !== null && incomingMs <= currentMs) return r;
+        return {
+          ...r,
+          lpg: data.lpg ?? null,
+          co2: data.co2 ?? null,
+          temp: data.temp ?? null,
+          humidity: data.humidity ?? null,
+          online: isRecent,
+          lastReadingAt: data.created_at,
+        };
+      })
     );
   }, []);
 
@@ -455,9 +558,20 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
   useEffect(() => {
     if (deviceIds.length === 0) return;
 
+    // setInterval does not await its callback, so without this a sweep that
+    // takes longer than the 2s interval (cold start, RLS evaluation, many
+    // devices) overlaps the next one and requests multiply without bound.
+    let sweepInFlight = false;
+
     const poll = async () => {
-      for (const deviceId of deviceIds) {
-        await fetchLatestFor(deviceId);
+      if (sweepInFlight) return;
+      sweepInFlight = true;
+      try {
+        for (const deviceId of deviceIds) {
+          await fetchLatestFor(deviceId);
+        }
+      } finally {
+        sweepInFlight = false;
       }
     };
 
@@ -519,7 +633,17 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
       return { error: error.message };
     }
     if (data) {
-      setRooms((prev) => [...prev, rowToRoom(data as RoomRow)]);
+      // The realtime INSERT handler already appends this row, and on a
+      // low-latency link it usually wins the race against this REST response.
+      // Appending unconditionally registered the device twice: it appeared
+      // twice in the list, was polled twice, and only one copy was removed by
+      // removeRoom's filter.
+      const next = rowToRoom(data as RoomRow);
+      setRooms((prev) =>
+        prev.some((r) => r.id === next.id)
+          ? prev.map((r) => (r.id === next.id ? next : r))
+          : [...prev, next]
+      );
     }
     return { error: null };
   }, []);
@@ -551,7 +675,6 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
   // separate global setting, just a bulk write of the per-device flag.
   const muteAll = useCallback(
     async (muted: boolean) => {
-      const previous = rooms;
       setRooms((prev) => prev.map((r) => ({ ...r, sirenMuted: muted })));
 
       const ids = rooms.map((r) => r.id);
@@ -560,7 +683,12 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
       const { error } = await supabase.from("rooms").update({ siren_muted: muted }).in("id", ids);
       if (error) {
         console.error("Failed to mute/unmute all devices:", error.message);
-        setRooms(previous);
+        // Roll back ONLY the flag that was changed. Restoring a whole-array
+        // snapshot also reverted every co2/temp/humidity value and
+        // lastReadingAt that the 2s poller had written while the request was
+        // in flight, making a transient network failure look like the whole
+        // building stopped reporting.
+        setRooms((prev) => prev.map((r) => ({ ...r, sirenMuted: !muted })));
       }
     },
     [rooms]

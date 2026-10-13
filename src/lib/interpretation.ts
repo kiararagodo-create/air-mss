@@ -17,6 +17,7 @@ import {
   type DailyMonthRow,
   type MetricKey,
   type MetricStats,
+  type ReportRpcThresholds,
 } from "./reportQueries";
 
 interface InterpretationInput {
@@ -31,7 +32,7 @@ interface InterpretationInput {
   metrics: Record<MetricKey, MetricStats>;
   dangerByMetric: DangerByMetric;
   daily: DailyMonthRow[];
-  thresholds: Record<string, number>;
+  thresholds: ReportRpcThresholds;
   daysInMonth: number;
 }
 
@@ -103,7 +104,12 @@ export function interpretMonth(input: InterpretationInput): string[] {
     co2: { high: thresholds.co2_danger },
     lpg: { high: thresholds.lpg_danger },
     temp: { high: thresholds.temp_heat_above, low: thresholds.temp_freeze_below },
-    humidity: { high: thresholds.humidity_mold_above, low: thresholds.humidity_dryBelow },
+    // The RPC returns a flat jsonb whose keys are snake_case (see
+// report_thresholds()). This was previously spelled `humidity_dryBelow`, which
+// is undefined at runtime; the `bands.low !== undefined` guard below then
+// silently disabled the dry-air check for good, so a month that dropped well
+// below the safe minimum was reported as having stayed in range.
+humidity: { high: thresholds.humidity_mold_above, low: thresholds.humidity_dry_below },
   };
 
   const metricLines: string[] = [];

@@ -1,59 +1,60 @@
-import type { DeviceReadings, SeverityLevel } from "../types";
+// src/lib/sensorThresholds.ts
+//
+// Legacy adapter. Severity grading now lives in src/lib/thresholdConfig.ts,
+// which every other caller uses, so a card can no longer disagree with the
+// badge beside it or with the reference guide below it.
+//
+// This module previously carried its own CO2_THRESHOLDS / LPG_THRESHOLDS
+// constants (elevated 800 / danger 1600, elevated 500 / danger 1000). Those
+// were left over from an earlier datasheet-derived scale, had never been
+// updated when the saved configuration changed, and would have graded every
+// reading differently from the rest of the app. They are gone: the thresholds
+// now come from the caller, which reads them from public.platform_thresholds.
+
+import type { Thresholds } from "../data/Data";
+import {
+  SEVERITY_LABEL,
+  SEVERITY_RANK,
+  SEVERITY_TONE,
+  gasSeverity,
+  hasAnyReading,
+  overallSeverity,
+  worstSeverity,
+  type MetricReadings,
+  type SeverityLevel,
+} from "./thresholdConfig";
+
+export type { SeverityLevel };
+export { SEVERITY_RANK, SEVERITY_TONE };
+
+/** Grade a CO2 reading against the saved configuration. */
+export function getCo2Severity(ppm: number | null, thresholds: Thresholds): SeverityLevel {
+  return gasSeverity(ppm, thresholds.co2);
+}
+
+/** Grade an LPG reading against the saved configuration. */
+export function getLpgSeverity(ppm: number | null, thresholds: Thresholds): SeverityLevel {
+  return gasSeverity(ppm, thresholds.lpg);
+}
+
+/** Grade a whole reading: the worst of all four metrics. */
+export function getOverallSeverity(readings: Partial<MetricReadings>, thresholds: Thresholds): SeverityLevel {
+  return overallSeverity(
+    { co2: null, lpg: null, temp: null, humidity: null, ...readings },
+    thresholds
+  );
+}
 
 /**
- * Threshold reference (derived from MH-Z19C and MQ-6 datasheets, tuned to
- * indoor classroom/lab safety guidance):
+ * Badge text for a grade, or null when nothing needs saying.
  *
- * CO2 (MH-Z19C, ppm)      LPG (MQ-6, ppm)
- * ------------------      ---------------
- * normal   : < 800        normal   : < 500
- * elevated : 800 - 1600   elevated : 500 - 1000
- * danger   : > 1600       danger   : > 1000
+ * A grade of "ok" is the only silent case, and only when something was
+ * actually measured - a device that has never reported returns the same grade
+ * but must be rendered as a no-data state, which is why callers also need
+ * hasAnyReading().
  */
-export const CO2_THRESHOLDS = {
-  elevated: 800,
-  danger: 1600,
-} as const;
-
-export const LPG_THRESHOLDS = {
-  elevated: 500,
-  danger: 1000,
-} as const;
-
-export function getCo2Severity(ppm: number | null): SeverityLevel {
-  if (ppm === null) return "normal";
-  if (ppm > CO2_THRESHOLDS.danger) return "danger";
-  if (ppm >= CO2_THRESHOLDS.elevated) return "elevated";
-  return "normal";
-}
-
-export function getLpgSeverity(ppm: number | null): SeverityLevel {
-  if (ppm === null) return "normal";
-  if (ppm > LPG_THRESHOLDS.danger) return "danger";
-  if (ppm >= LPG_THRESHOLDS.elevated) return "elevated";
-  return "normal";
-}
-
-const SEVERITY_RANK: Record<SeverityLevel, number> = {
-  normal: 0,
-  elevated: 1,
-  danger: 2,
-};
-
-/** Overall card severity is always the worse of the two readings. */
-export function getOverallSeverity(readings: DeviceReadings): SeverityLevel {
-  const co2 = getCo2Severity(readings.co2Ppm);
-  const lpg = getLpgSeverity(readings.lpgPpm);
-  return SEVERITY_RANK[co2] >= SEVERITY_RANK[lpg] ? co2 : lpg;
-}
-
 export function getSeverityBadgeLabel(severity: SeverityLevel): string | null {
-  switch (severity) {
-    case "danger":
-      return "Danger";
-    case "elevated":
-      return "High Gas Detected";
-    case "normal":
-      return null; // no badge needed when readings are normal
-  }
+  return severity === "ok" ? null : SEVERITY_LABEL[severity];
 }
+
+export { hasAnyReading, worstSeverity };

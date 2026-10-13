@@ -1,6 +1,18 @@
 
 type Tone = "success" | "warning" | "high" | "danger";
 
+// Severity grading, badge labels and tones all come from the shared threshold
+// module. See src/lib/thresholdConfig.ts for why the device's own `severity`
+// column is not consulted.
+import {
+  SEVERITY_LABEL,
+  SEVERITY_RANK,
+  SEVERITY_TONE,
+  hasAnyReading,
+  overallSeverity,
+  type SeverityLevel,
+} from "../lib/thresholdConfig";
+
 // ---------------------------------------------------------------------------
 // Canonical data-layer types. Other files (AdminDashboard.tsx, page
 // components) import Room / Thresholds / ThresholdTier from here - or via
@@ -107,69 +119,96 @@ export interface SensorInfo {
   specs: string[];
 }
 
-// Default safety thresholds. Admins can override these from the Settings page.
+// Default safety thresholds — the SEED, not the truth.
 //
-// CO2 (MH-Z19C): 1000 ppm = start paying attention (ASHRAE indoor-air-quality
-// guidance re: poor ventilation/drowsiness). 'high' and 'danger' are both set
-// to 3500 ppm, matching the ESP32 firmware's CO2_URGENT_PPM (the level at
-// which the physical buzzer actually fires) - collapsing the old 4-tier
-// severity scale (warning/high/danger) into 3 effective tiers (Safe /
-// Warning / Danger) so the dashboard's CO2 Reference Guide and alarm state
-// line up with what the hardware does. 5000 ppm (OSHA 8-hour occupational
-// exposure ceiling) is no longer used as a tier boundary here, but is still
-// referenced in the UI copy for context.
+// These values are used for exactly two situations:
+//   * first-time setup, before any row exists in public.platform_thresholds
+//   * the fallback when the fetch of the saved row fails
 //
-// LPG (MQ-6): thresholds are set relative to the Lower Explosive Limit (LEL),
-// not a health exposure limit, since the real danger here is combustion.
-// ~2000 ppm ≈ 10% LEL, the standard conservative early-warning margin used by
-// commercial combustible-gas detectors; ~5000+ ppm escalates to full alarm.
-// Note: MQ-6 is a semiconductor sensor, not a certified gas-safety detector -
-// treat these as relative trigger points to calibrate against your specific
-// board's potentiometer/curve, not lab-grade absolute ppm.
+// Once a row has been saved it OVERRIDES everything here, which is why
+// supabase/migrations/20260915000000_reference_thresholds.sql updates the
+// saved row rather than relying on this object. Editing this object alone does
+// nothing to a deployment that has already saved a configuration.
 //
-// Temp/Humidity (DHT22): normal/danger humidity band widened to 20-80% RH
-// to reflect typical Philippine ambient humidity, rather than a temperate-
-// climate comfort range - danger only below 20% or above 80%. Temp alarm
-// points (35°C, 5°C) unchanged. DHT22's own hardware spec is -40 to 80°C /
-// 0-100% RH with ±0.5°C / ±2% RH accuracy, so these thresholds sit well
-// within that range.
+// The authoritative copy for every rendered number is the saved row; see
+// src/lib/thresholdConfig.ts, which turns it into every range, label, badge,
+// alarm trigger and footnote the UI shows.
+//
+// CO2 (MH-Z19C), ASHRAE 62.1 & OSHA
+//   warning 1000 / high 2000 / danger 3500 ppm.
+//   The ESP32 implements only warning (1000), alarm (3500) and critical
+//   (5000). "high" is a dashboard-only tier that exists so a reading can be
+//   graded between the physical alarm points; the hardware does not act on it.
+//
+// LPG (MQ-6), NFPA 54 / NFPA 715 & BS EN 50194-1
+//   warning 1000 / high 2100 / danger 4200 ppm.
+//   Set as a fraction of the Lower Explosive Limit rather than as a health
+//   exposure limit, because the hazard here is combustion: 2100 ppm is 10% LEL
+//   (buzzer alarm) and 4200 ppm is 20% LEL (critical hazard).
+//
+// Temperature (DHT22), ASHRAE 55: freeze below 5, cool below 18, heat above 35.
+// Humidity (DHT22), EPA & ASHRAE 62.1: dry below 20, low below 30, mold above 80.
+// Both are two-sided bands, well inside the DHT22's own -40..80 °C /
+// 0-100 % RH measurement range.
 export const DEFAULT_THRESHOLDS: Thresholds = {
-  co2: { warning: 1000, high: 3500, danger: 3500 },
-  lpg: { warning: 1000, high: 2000, danger: 5000 },
+  co2: { warning: 1000, high: 2000, danger: 3500 },
+  lpg: { warning: 1000, high: 2100, danger: 4200 },
   temp: { freezeBelow: 5, coolBelow: 18, heatAbove: 35 },
   humidity: { dryBelow: 20, lowBelow: 30, moldAbove: 80 },
 };
 
-export const SEVERITY_META: SeverityMeta[] = [
-  { severity: 0, label: "Good", tone: "success" },
-  { severity: 1, label: "Warning", tone: "warning" },
-  { severity: 2, label: "High Gas", tone: "high" },
-  { severity: 3, label: "Gas Risk", tone: "danger" },
-];
+// Severity metadata is derived from the shared grading module rather than
+// restated here, so the numeric 0-3 scale this file keeps for compatibility
+// cannot drift from the ok/warning/high/danger levels everything else uses.
+const SEVERITY_LEVELS: SeverityLevel[] = ["ok", "warning", "high", "danger"];
+
+export const SEVERITY_META: SeverityMeta[] = SEVERITY_LEVELS.map((level, severity) => ({
+  severity,
+  label: SEVERITY_LABEL[level],
+  tone: SEVERITY_TONE[level] as Tone,
+}));
 
 /** Shown wherever a metric has no measurement at all. Never a numeric value. */
 export const NO_DATA_LABEL = "No sensor data recorded";
 
-// Worst-case severity across CO2 and LPG readings drives the room's badge/tone.
-// Boundary semantics are `>=`, matching reading_is_danger() in SQL and
-// isDangerRow() in supabase/functions/_shared/reporting.ts, so the dashboard
-// badge and the PDF never disagree about a reading sitting exactly on a limit.
+/**
+ * Grade a room from its RAW readings against the saved thresholds.
+ *
+ * All four metrics contribute, not just the two gases: a room at a lethal
+ * temperature is in trouble whatever the CO2 sensor says. The ESP32's own
+ * `severity` column is deliberately not consulted - the firmware grades
+ * against tiers it compiled in, which do not change when an admin re-tunes the
+ * dashboard configuration, so trusting it would let the badge contradict the
+ * reference guide shown directly beneath it.
+ *
+ * The reported severity is the worst of the four. Boundary semantics are
+ * `>=`, matching report_is_danger() in SQL and isDangerRow() in
+ * supabase/functions/_shared/reporting.ts, so the badge and the PDF never
+ * disagree about a reading sitting exactly on a limit.
+ */
 export function getStatus(room: Room, thresholds: Thresholds): Status {
-  const co2Severity = severityFor(room.co2, thresholds.co2);
-  const lpgSeverity = severityFor(room.lpg, thresholds.lpg);
-  const severity = Math.max(co2Severity, lpgSeverity);
-  // A severity of 0 that came from actual readings is "Good". A severity of 0
+  const level = overallSeverity(
+    { co2: room.co2, lpg: room.lpg, temp: room.temp, humidity: room.humidity },
+    thresholds
+  );
+  const severity = SEVERITY_RANK[level];
+
+  // A severity of 0 that came from actual readings is "OK". A severity of 0
   // that came from nothing at all is "No sensor data recorded" and must be
   // styled as absent, not as a passing result.
-  const hasData = room.co2 !== null || room.lpg !== null;
+  const hasData = hasAnyReading({
+    co2: room.co2,
+    lpg: room.lpg,
+    temp: room.temp,
+    humidity: room.humidity,
+  });
 
   if (!hasData) {
     return { severity: 0, label: NO_DATA_LABEL, tone: "success", hasData: false };
   }
 
   const meta = SEVERITY_META[severity];
-  const label = severity === 3 && lpgSeverity === 3 ? "Gas Risk" : meta.label;
-  return { severity, label, tone: meta.tone, hasData: true };
+  return { severity, label: meta.label, tone: meta.tone, hasData: true };
 }
 
 export function actionMessage(room: Room, thresholds: Thresholds): ActionMessage {
@@ -178,7 +217,7 @@ export function actionMessage(room: Room, thresholds: Thresholds): ActionMessage
   if (!status.hasData) {
     return {
       title: "No sensor data received",
-      body: "This device has not reported a CO2 or LPG reading, so no condition can be assessed. " +
+      body: "This device has not reported any reading, so no condition can be assessed. " +
         "This is an absence of data, not a safe reading. Check that the sensor is powered and reporting.",
     };
   }
@@ -187,21 +226,21 @@ export function actionMessage(room: Room, thresholds: Thresholds): ActionMessage
   if (status0 === 0)
     return {
       title: "No action needed",
-      body: "CO2 and LPG levels are within safe limits. Continue monitoring the area.",
+      body: "CO2, LPG, temperature and humidity are all within their configured safe limits. Continue monitoring the area.",
     };
   if (status0 === 1)
     return {
       title: "Monitor conditions",
-      body: "Gas levels are elevated; observe the area closely and reduce exposure if possible.",
+      body: "A reading has crossed its warning threshold. Observe the area closely and reduce exposure if possible.",
     };
   if (status0 === 2)
     return {
       title: "Investigate elevated readings",
-      body: "Air quality parameters are trending high. Increase ventilation and monitor closely for further escalation.",
+      body: "A reading has crossed its high threshold. Increase ventilation and monitor closely for further escalation.",
     };
   return {
     title: "Immediate action required",
-    body: "Gas or CO2 levels have reached dangerous limits. Evacuate the area, ventilate immediately, and dispatch maintenance/security personnel.",
+    body: "A reading has reached its danger threshold. Evacuate the area, ventilate immediately, and dispatch maintenance/security personnel.",
   };
 }
 
@@ -228,17 +267,6 @@ export function deviceAgeLabel(installedAt: string): string {
   const remMonths = months % 12;
   if (remMonths === 0) return `${years} year${years === 1 ? "" : "s"}`;
   return `${years} year${years === 1 ? "" : "s"} ${remMonths} month${remMonths === 1 ? "" : "s"}`;
-}
-
-function severityFor(value: number | null, tiers: ThresholdTier): number {
-  // A missing value contributes no severity. It is NOT a reading of 0, and it
-  // must not be allowed to imply a safe result on its own - getStatus() reports
-  // `hasData: false` in that case so the UI can say so explicitly.
-  if (value == null) return 0;
-  if (value >= tiers.danger) return 3;
-  if (value >= tiers.high) return 2;
-  if (value >= tiers.warning) return 1;
-  return 0;
 }
 
 export function exportCSV(rooms: Room[], thresholds: Thresholds): void {

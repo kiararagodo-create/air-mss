@@ -8,7 +8,7 @@
 //
 // The PDF is generated in the browser by lib/monthlyPdf.ts.
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Download, Loader2 } from "lucide-react";
 import {
   MONTH_NAMES,
@@ -56,51 +56,68 @@ export default function MonthlyReportGrid({
     humidity_mold_above: thresholds.humidity_mold_above,
   };
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const rows = await Promise.all(
-        Array.from({ length: 12 }, (_, i) =>
-          fetchCalendarMonth(
-            `${year}-${String(i + 1).padStart(2, "0")}-01`,
-            deviceId,
-            rpcThresholds
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+
+      // Work out which months to ask for BEFORE issuing any request. The
+      // previous version fetched all twelve and only afterwards discarded the
+      // future ones, so every page mount fired up to 12 concurrent PostgREST
+      // RPCs of which the ones past the current month were guaranteed empty.
+      const monthsToFetch: number[] = [];
+      for (let m = 1; m <= 12; m++) {
+        if (year > currentYear || (year === currentYear && m > currentMonth)) continue;
+        monthsToFetch.push(m);
+      }
+
+      try {
+        const rows = await Promise.all(
+          monthsToFetch.map((month) =>
+            fetchCalendarMonth(
+              `${year}-${String(month).padStart(2, "0")}-01`,
+              deviceId,
+              rpcThresholds
+            )
           )
-        )
-      );
+        );
 
-      const entries: MonthEntry[] = [];
-      rows.forEach((days, i) => {
-        const month = i + 1;
-        const isFuture = year > currentYear || (year === currentYear && month > currentMonth);
-        if (isFuture) return;
+        const entries: MonthEntry[] = [];
+        rows.forEach((days, i) => {
+          const month = monthsToFetch[i];
+          const readingCount = days.reduce((sum, d) => sum + Number(d.reading_count), 0);
+          if (readingCount === 0) return;
 
-        const readingCount = days.reduce((sum, d) => sum + Number(d.reading_count), 0);
-        if (readingCount === 0) return;
-
-        entries.push({
-          month,
-          readingCount,
-          dangerCount: days.reduce((sum, d) => sum + Number(d.danger_readings), 0),
+          entries.push({
+            month,
+            readingCount,
+            dangerCount: days.reduce((sum, d) => sum + Number(d.danger_readings), 0),
+          });
         });
-      });
-      setMonths(entries);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load months.");
-      setMonths([]);
-    } finally {
-      setLoading(false);
-    }
+        if (!cancelled) setMonths(entries);
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to load months.");
+          setMonths([]);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [year, deviceId, currentYear, currentMonth, JSON.stringify(rpcThresholds)]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
   async function download(month: number) {
+    // One PDF at a time: without this, clicking Jan then Feb lets Jan's
+    // finally clear busyMonth while Feb is still generating, which re-enables
+    // the Jan button and lets a user stack downloads.
+    if (busyMonth !== null) return;
     setBusyMonth(month);
+    setError(null);
     try {
       const stats: MonthStats = await fetchMonthStats(year, month, deviceId, rpcThresholds);
       downloadMonthlyPdf(stats, { deviceLabel, year, month });

@@ -1,22 +1,19 @@
-import { useState, type CSSProperties } from "react";
-import { Save, Shield, SlidersHorizontal, User } from "lucide-react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { AlertTriangle, Save, Shield, SlidersHorizontal, User } from "lucide-react";
 import { Badge } from "../../ui";
+import type { Thresholds } from "../../data/Data";
+import {
+  CO2_STANDARD,
+  HUMIDITY_STANDARD,
+  LPG_STANDARD,
+  TEMP_STANDARD,
+  buildOverviewRows,
+  type ThresholdField,
+  type ValidationErrors,
+} from "../../lib/thresholdConfig";
+import { useThresholdConfig } from "../../hooks/useThresholdConfig";
 
-// Local type definitions to avoid depending on AdminDashboard module
 type Settings = {};
-
-type SensorTier = { warning: number; high: number; danger: number };
-
-// Matches Data.ts's TempTier / HumidityTier shape for the DHT22 sensor.
-type TempTier = { freezeBelow: number; coolBelow: number; heatAbove: number };
-type HumidityTier = { dryBelow: number; lowBelow: number; moldAbove: number };
-
-type Thresholds = {
-  co2: SensorTier;
-  lpg: SensorTier;
-  temp: TempTier;
-  humidity: HumidityTier;
-};
 
 type AppUser = {
   role: string;
@@ -30,19 +27,66 @@ type AppUser = {
 interface SettingsPageProps {
   setSettings: (settings: Settings) => void;
   thresholds: Thresholds;
-  setThresholds: (thresholds: Thresholds) => void;
+  setThresholds: (thresholds: Thresholds) => Promise<{ error: string | null }>;
   user: AppUser;
 }
 
 export default function SettingsPage({ setSettings, thresholds, setThresholds, user }: SettingsPageProps) {
-  const [localThresholds, setLocalThresholds] = useState<Thresholds>(thresholds);
-  const [saved, setSaved] = useState(false);
+  const isAdmin = user.role === "admin";
+  const { validate, savedIsValid } = useThresholdConfig();
 
-  function save() {
+  const [localThresholds, setLocalThresholds] = useState<Thresholds>(thresholds);
+  const [dirty, setDirty] = useState(false);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Adopt a configuration saved elsewhere while this form is idle, so an update
+  // from another session is picked up without a reload. Dirty forms are left
+  // alone - overwriting unsaved edits because a background event fired would be
+  // worse than showing a value that is one revision behind.
+  useEffect(() => {
+    if (!dirty) setLocalThresholds(thresholds);
+  }, [thresholds, dirty]);
+
+  // The overview previews what is being edited, so it shows the candidate
+  // configuration while there are unsaved changes and the saved one otherwise.
+  const overviewRows = useMemo(
+    () => buildOverviewRows(dirty ? localThresholds : thresholds),
+    [dirty, localThresholds, thresholds]
+  );
+
+  const { valid, errors } = useMemo(() => validate(localThresholds), [validate, localThresholds]);
+  const errorCount = Object.keys(errors).length;
+
+  function update<K extends keyof Thresholds>(group: K, field: string, value: number) {
+    setLocalThresholds((prev) => ({
+      ...prev,
+      [group]: { ...prev[group], [field]: value },
+    }));
+    setDirty(true);
+    setSaveState("idle");
+    setSaveError(null);
+  }
+
+  async function save() {
+    // The form is already validated, but the database enforces the same rule
+    // through CHECK constraints and a non-admin write is rejected by RLS. Do
+    // not fire a request that cannot succeed.
+    if (!valid || !isAdmin) return;
+
+    setSaveState("saving");
     setSettings({} as Settings);
-    setThresholds(localThresholds);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    const result = await setThresholds(localThresholds);
+
+    if (result?.error) {
+      setSaveState("error");
+      setSaveError(result.error);
+      return;
+    }
+
+    setDirty(false);
+    setSaveState("saved");
+    setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 2500);
   }
 
   const field: CSSProperties = {
@@ -54,25 +98,6 @@ export default function SettingsPage({ setSettings, thresholds, setThresholds, u
     fontSize: 13.5,
   };
   const smallLabel: CSSProperties = { fontSize: 11, fontWeight: 700, color: "#64748b" };
-
-  const overviewRows: [string, string][] = [
-    [
-      "CO2 tiers:",
-      `${localThresholds.co2.warning} / ${localThresholds.co2.high} / ${localThresholds.co2.danger} ppm`,
-    ],
-    [
-      "LPG tiers:",
-      `${localThresholds.lpg.warning} / ${localThresholds.lpg.high} / ${localThresholds.lpg.danger} ppm`,
-    ],
-    [
-      "Temp tiers:",
-      `${localThresholds.temp.freezeBelow}°C / ${localThresholds.temp.coolBelow}°C / ${localThresholds.temp.heatAbove}°C`,
-    ],
-    [
-      "Humidity tiers:",
-      `${localThresholds.humidity.dryBelow}% / ${localThresholds.humidity.lowBelow}% / ${localThresholds.humidity.moldAbove}%`,
-    ],
-  ];
 
   return (
     <div>
@@ -130,243 +155,150 @@ export default function SettingsPage({ setSettings, thresholds, setThresholds, u
             <SlidersHorizontal size={16} /> System Preferences & Safety Controls
           </div>
 
-          <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <Shield size={15} color="#0d9488" />
-              <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>
-                CO2 Safety Thresholds (ppm)
+          {!isAdmin && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                background: "#fffbeb",
+                border: "1px solid #fde68a",
+                borderRadius: 10,
+                padding: 10,
+                marginBottom: 12,
+                fontSize: 12.5,
+                color: "#92400e",
+              }}
+            >
+              <AlertTriangle size={14} /> You are signed in as {user.role || "a non-admin"}. You can view the
+              active configuration, but only an administrator can change it.
+            </div>
+          )}
+
+          <ThresholdGroup
+            title="CO2 Safety Thresholds (ppm)"
+            standard={CO2_STANDARD.label}
+            values={localThresholds.co2}
+            fields={[
+              { key: "warning", label: "WARNING" },
+              { key: "high", label: "HIGH" },
+              { key: "danger", label: "DANGER" },
+            ]}
+            errorKeys={["co2.warning", "co2.high", "co2.danger"]}
+            errors={errors}
+            disabled={!isAdmin}
+            fieldStyle={field}
+            labelStyle={smallLabel}
+            onChange={(key, value) => update("co2", key, value)}
+            note="The device implements warning, alarm and critical tiers only. The intermediate tier above is dashboard-only."
+          />
+
+          <ThresholdGroup
+            title="LPG Safety Thresholds (ppm)"
+            standard={LPG_STANDARD.label}
+            values={localThresholds.lpg}
+            fields={[
+              { key: "warning", label: "WARNING" },
+              { key: "high", label: "HIGH (10% LEL, buzzer alarm)" },
+              { key: "danger", label: "DANGER (20% LEL)" },
+            ]}
+            errorKeys={["lpg.warning", "lpg.high", "lpg.danger"]}
+            errors={errors}
+            disabled={!isAdmin}
+            fieldStyle={field}
+            labelStyle={smallLabel}
+            onChange={(key, value) => update("lpg", key, value)}
+            note={`Tiers are set as a fraction of the ${LPG_STANDARD.lelLabel} Lower Explosive Limit, not as a health exposure limit, because the hazard here is combustion.`}
+          />
+
+          <ThresholdGroup
+            title="DHT22 Temperature Thresholds (°C)"
+            standard={TEMP_STANDARD.label}
+            values={localThresholds.temp}
+            fields={[
+              { key: "freezeBelow", label: "FREEZE BELOW" },
+              { key: "coolBelow", label: "COOL BELOW" },
+              { key: "heatAbove", label: "HEAT ABOVE" },
+            ]}
+            errorKeys={["temp.freezeBelow", "temp.coolBelow", "temp.heatAbove"]}
+            errors={errors}
+            disabled={!isAdmin}
+            fieldStyle={field}
+            labelStyle={smallLabel}
+            onChange={(key, value) => update("temp", key, value)}
+            note="Two-sided band: freeze below the first limit, cool below the second, heat above the third."
+          />
+
+          <ThresholdGroup
+            title="DHT22 Humidity Thresholds (% RH)"
+            standard={HUMIDITY_STANDARD.label}
+            values={localThresholds.humidity}
+            fields={[
+              { key: "dryBelow", label: "DRY BELOW" },
+              { key: "lowBelow", label: "LOW BELOW" },
+              { key: "moldAbove", label: "MOLD ABOVE" },
+            ]}
+            errorKeys={["humidity.dryBelow", "humidity.lowBelow", "humidity.moldAbove"]}
+            errors={errors}
+            disabled={!isAdmin}
+            fieldStyle={field}
+            labelStyle={smallLabel}
+            onChange={(key, value) => update("humidity", key, value)}
+            note="Two-sided band within the DHT22's own 0-100 % RH measurement range."
+          />
+
+          {errorCount > 0 && (
+            <div
+              role="alert"
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 8,
+                background: "#fef2f2",
+                border: "1px solid #fca5a5",
+                borderRadius: 10,
+                padding: 10,
+                marginBottom: 12,
+                fontSize: 12.5,
+                color: "#991b1b",
+              }}
+            >
+              <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span>
+                {errorCount} field{errorCount === 1 ? "" : "s"} need attention. Each group must ascend: the first
+                value below the second, the second below the third.
               </span>
             </div>
-            <div className="air-threshold-grid">
-              <div>
-                <label style={smallLabel}>WARNING</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.co2.warning}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      co2: { ...localThresholds.co2, warning: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <label style={smallLabel}>HIGH</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.co2.high}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      co2: { ...localThresholds.co2, high: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <label style={smallLabel}>DANGER</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.co2.danger}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      co2: { ...localThresholds.co2, danger: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-            </div>
-          </div>
+          )}
 
-          <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <Shield size={15} color="#0d9488" />
-              <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>
-                LPG Safety Thresholds (ppm)
-              </span>
+          {saveError && (
+            <div
+              role="alert"
+              style={{
+                background: "#fef2f2",
+                border: "1px solid #fca5a5",
+                borderRadius: 10,
+                padding: 10,
+                marginBottom: 12,
+                fontSize: 12.5,
+                color: "#991b1b",
+              }}
+            >
+              Not saved: {saveError}
             </div>
-            <div className="air-threshold-grid">
-              <div>
-                <label style={smallLabel}>WARNING</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.lpg.warning}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      lpg: { ...localThresholds.lpg, warning: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <label style={smallLabel}>HIGH</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.lpg.high}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      lpg: { ...localThresholds.lpg, high: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <label style={smallLabel}>DANGER</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.lpg.danger}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      lpg: { ...localThresholds.lpg, danger: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-            </div>
-            <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>
-              Defaults follow a common teaching model, not a cited standard. Justify final figures
-              with ASHRAE 62.1 / NIOSH (CO2) and NFPA 58 or your sensor's calibrated data (LPG).
-            </div>
-          </div>
+          )}
 
-          <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <Shield size={15} color="#0d9488" />
-              <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>
-                DHT22 Temperature Thresholds (°C)
-              </span>
-            </div>
-            <div className="air-threshold-grid">
-              <div>
-                <label style={smallLabel}>FREEZE BELOW</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.temp.freezeBelow}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      temp: { ...localThresholds.temp, freezeBelow: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <label style={smallLabel}>COOL BELOW</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.temp.coolBelow}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      temp: { ...localThresholds.temp, coolBelow: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <label style={smallLabel}>HEAT ABOVE</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.temp.heatAbove}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      temp: { ...localThresholds.temp, heatAbove: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-            </div>
-          </div>
-
-          <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <Shield size={15} color="#0d9488" />
-              <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>
-                DHT22 Humidity Thresholds (% RH)
-              </span>
-            </div>
-            <div className="air-threshold-grid">
-              <div>
-                <label style={smallLabel}>DRY BELOW</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.humidity.dryBelow}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      humidity: { ...localThresholds.humidity, dryBelow: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <label style={smallLabel}>LOW BELOW</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.humidity.lowBelow}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      humidity: { ...localThresholds.humidity, lowBelow: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-              <div>
-                <label style={smallLabel}>MOLD ABOVE</label>
-                <input
-                  type="number"
-                  disabled={user.role !== "admin"}
-                  style={{ ...field, marginTop: 4 }}
-                  value={localThresholds.humidity.moldAbove}
-                  onChange={(e) =>
-                    setLocalThresholds({
-                      ...localThresholds,
-                      humidity: { ...localThresholds.humidity, moldAbove: Number(e.target.value) },
-                    })
-                  }
-                />
-              </div>
-            </div>
-            <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>
-              Defaults derived from common DHT22 comfort/mold-risk reference bands (18-27°C,
-              30-60% RH normal range). Not a cited regulatory standard.
-            </div>
-          </div>
-
-          {user.role === "admin" && (
+          {isAdmin && (
             <button
               onClick={save}
+              disabled={!valid || saveState === "saving"}
+              title={
+                !valid
+                  ? "Fix the highlighted fields before saving"
+                  : undefined
+              }
               style={{
-                background: "#0d9488",
+                background: valid && saveState !== "saving" ? "#0d9488" : "#94a3b8",
                 color: "#fff",
                 border: "none",
                 borderRadius: 8,
@@ -376,11 +308,25 @@ export default function SettingsPage({ setSettings, thresholds, setThresholds, u
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                cursor: "pointer",
+                cursor: valid && saveState !== "saving" ? "pointer" : "not-allowed",
               }}
             >
-              <Save size={15} /> {saved ? "Configuration saved" : "Save Configuration"}
+              <Save size={15} />
+              {saveState === "saving"
+                ? "Saving…"
+                : saveState === "saved"
+                ? "Configuration saved"
+                : saveState === "error"
+                ? "Save failed"
+                : "Save Configuration"}
             </button>
+          )}
+
+          {!savedIsValid && (
+            <p style={{ fontSize: 11.5, color: "#b91c1c", marginTop: 10, marginBottom: 0 }}>
+              Warning: the currently saved configuration does not satisfy the ascending-order rule. Correct it and
+              save to bring it back into line.
+            </p>
           )}
         </div>
 
@@ -440,6 +386,7 @@ export default function SettingsPage({ setSettings, thresholds, setThresholds, u
             </div>
           </div>
 
+          {/* Generated from the saved values, so it cannot drift from them. */}
           <div
             style={{
               background: "#fff",
@@ -451,23 +398,111 @@ export default function SettingsPage({ setSettings, thresholds, setThresholds, u
             <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 10 }}>
               ACTIVE CONFIGURATION OVERVIEW
             </div>
-            {overviewRows.map(([label2, val]) => (
+            {overviewRows.map((row) => (
               <div
-                key={label2}
+                key={row.label}
                 style={{
                   display: "flex",
                   justifyContent: "space-between",
+                  gap: 10,
                   fontSize: 12.5,
                   padding: "5px 0",
                 }}
               >
-                <span style={{ color: "#64748b" }}>{label2}</span>
-                <span style={{ fontWeight: 700, color: "#0d9488", textAlign: "right" }}>{val}</span>
+                <span style={{ color: "#64748b" }}>{row.label}</span>
+                <span style={{ fontWeight: 700, color: "#0d9488", textAlign: "right" }}>{row.value}</span>
               </div>
             ))}
+            {dirty && (
+              <div style={{ fontSize: 11, color: "#d97706", marginTop: 8 }}>
+                Showing unsaved edits. Save to apply them platform-wide.
+              </div>
+            )}
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One threshold group: title, the standard it comes from, three ascending
+ * inputs and their inline errors.
+ *
+ * Rendered from a description rather than written out four times, so a change
+ * to the validation behaviour or the error presentation cannot be applied to
+ * three groups and missed on the fourth.
+ */
+function ThresholdGroup({
+  title,
+  standard,
+  values,
+  fields,
+  errorKeys,
+  errors,
+  disabled,
+  fieldStyle,
+  labelStyle,
+  onChange,
+  note,
+}: {
+  title: string;
+  standard: string;
+  values: object;
+  fields: { key: string; label: string }[];
+  /** Fully-qualified field names, so errors land on the right group. */
+  errorKeys: ThresholdField[];
+  errors: ValidationErrors;
+  disabled: boolean;
+  fieldStyle: CSSProperties;
+  labelStyle: CSSProperties;
+  onChange: (key: string, value: number) => void;
+  note?: ReactNode;
+}) {
+  return (
+    <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+        <Shield size={15} color="#0d9488" />
+        <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>{title}</span>
+      </div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: "#0d9488", marginBottom: 10, paddingLeft: 23 }}>
+        Standard: {standard}
+      </div>
+      <div className="air-threshold-grid">
+        {fields.map((f, i) => {
+          const errorKey = errorKeys[i];
+          const error = errors[errorKey];
+          return (
+            <div key={f.key}>
+              <label style={labelStyle}>{f.label}</label>
+              <input
+                type="number"
+                disabled={disabled}
+                aria-invalid={!!error}
+                aria-describedby={error ? `${errorKey}-error` : undefined}
+                style={{
+                  ...fieldStyle,
+                  marginTop: 4,
+                  borderColor: error ? "#dc2626" : "#e2e8f0",
+                  background: disabled ? "#f8fafc" : "#fff",
+                }}
+                value={(values as Record<string, number>)[f.key]}
+                onChange={(e) => onChange(f.key, Number(e.target.value))}
+              />
+              {error && (
+                <div
+                  id={`${errorKey}-error`}
+                  role="alert"
+                  style={{ fontSize: 11, color: "#dc2626", marginTop: 4, lineHeight: 1.4 }}
+                >
+                  {error}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {note && <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8, lineHeight: 1.5 }}>{note}</div>}
     </div>
   );
 }

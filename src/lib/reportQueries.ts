@@ -90,6 +90,26 @@ export interface DailyMonthRow {
 /** Per-metric daily fields, so callers can index by metric without `any`. */
 export type DailyMetricField = `${MetricKey}_avg` | `${MetricKey}_min` | `${MetricKey}_max`;
 
+/**
+ * The flat threshold map the report RPCs both accept and return.
+ *
+ * `report_thresholds(p_thresholds)` resolves every key against the configured
+ * defaults, so all six are always present on the way back. This type exists so
+ * the six snake_case key names are checked at compile time: the RPC payload was
+ * previously declared as the richer client `ReportThresholds`, which has keys
+ * like `threshold_source` that the RPC never returns, so every consumer had to
+ * cast to `Record<string, number>` and a misspelled key compiled clean and
+ * resolved to `undefined` at runtime.
+ */
+export interface ReportRpcThresholds {
+  co2_danger: number;
+  lpg_danger: number;
+  temp_freeze_below: number;
+  temp_heat_above: number;
+  humidity_dry_below: number;
+  humidity_mold_above: number;
+}
+
 export interface MonthStats {
   year: number;
   month: number;
@@ -98,7 +118,7 @@ export interface MonthStats {
   danger_readings: number;
   days_with_data: number;
   days_with_danger: number;
-  thresholds: ReportThresholds;
+  thresholds: ReportRpcThresholds;
   danger_by_metric: DangerByMetric;
   metrics: Record<MetricKey, MetricStats>;
   daily: DailyMonthRow[];
@@ -116,7 +136,7 @@ export function toRpcThresholds(th: {
   lpg: { danger: number };
   temp: { freezeBelow: number; heatAbove: number };
   humidity: { dryBelow: number; moldAbove: number };
-}): Record<string, number> {
+}): ReportRpcThresholds {
   return {
     co2_danger: th.co2.danger,
     lpg_danger: th.lpg.danger,
@@ -152,13 +172,17 @@ export async function fetchDayDetail(
   deviceId: string | null,
   thresholds: Record<string, number>
 ): Promise<DayDetail> {
-  const { data, error } = await supabase.rpc("report_day_detail", {
+  const { data, error } = await supabase.rpc("report_day_detail_approved", {
     p_day: day,
     p_device_id: deviceId,
     p_thresholds: thresholds,
     p_bucket_seconds: 300,
   });
   if (error) throw new Error(error.message);
+  // PostgREST returns null - not an error - when an RPC yields no value or is
+  // missing from the schema cache. Casting that null to DayDetail let the day
+  // panel silently render nothing instead of reporting the failure.
+  if (!data) throw new Error("report_day_detail_approved returned no data.");
   return data as DayDetail;
 }
 
@@ -187,13 +211,14 @@ export async function fetchMonthStats(
   deviceId: string | null,
   thresholds: Record<string, number>
 ): Promise<MonthStats> {
-  const { data, error } = await supabase.rpc("report_month_stats", {
+  const { data, error } = await supabase.rpc("report_month_stats_approved", {
     p_year: year,
     p_month: month,
     p_device_id: deviceId,
     p_thresholds: thresholds,
   });
   if (error) throw new Error(error.message);
+  if (!data) throw new Error("report_month_stats_approved returned no data.");
   return data as MonthStats;
 }
 

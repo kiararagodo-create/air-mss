@@ -1,35 +1,61 @@
 import { Maximize2, Users, Circle } from "lucide-react";
 import type { IoTDevice } from "../types";
+import type { Thresholds } from "../data/Data";
 import { getCo2Severity, getLpgSeverity, getOverallSeverity, getSeverityBadgeLabel } from "../lib/sensorThresholds";
 
 interface DeviceCardProps {
   device: IoTDevice;
+  /**
+   * The saved safety configuration. Required, not optional: this card used to
+   * grade against its own built-in constants, which meant it could show a green
+   * reading for a value the rest of the app was showing as dangerous.
+   */
+  thresholds: Thresholds;
   onSetStatus?: (id: string, status: "online" | "offline") => void;
   onRemove?: (id: string) => void;
   canToggle?: boolean;
   canRemove?: boolean;
 }
 
+// Keyed by the shared ok / warning / high / danger levels.
 const BORDER_BY_SEVERITY: Record<string, string> = {
-  normal: "border-l-emerald-400",
-  elevated: "border-l-amber-400",
+  ok: "border-l-emerald-400",
+  warning: "border-l-amber-400",
+  high: "border-l-orange-400",
   danger: "border-l-red-500",
 };
 
 const BADGE_BY_SEVERITY: Record<string, string> = {
-  elevated: "bg-amber-100 text-amber-800",
+  warning: "bg-amber-100 text-amber-800",
+  high: "bg-orange-100 text-orange-800",
   danger: "bg-red-100 text-red-800",
+};
+
+const READING_COLOR_BY_SEVERITY: Record<string, string> = {
+  ok: "text-slate-800",
+  warning: "text-amber-600",
+  high: "text-orange-600",
+  danger: "text-red-600",
 };
 
 export default function DeviceCard({
   device,
+  thresholds,
   onSetStatus,
   onRemove,
   canToggle = true,
   canRemove = true,
 }: DeviceCardProps) {
   const { readings } = device;
-  const overallSeverity = getOverallSeverity(readings);
+  const overallSeverity = getOverallSeverity(
+    {
+      co2: readings.co2Ppm,
+      lpg: readings.lpgPpm,
+      temp: readings.temperatureC,
+      humidity: readings.humidityPct,
+    },
+    thresholds
+  );
   const badgeLabel = getSeverityBadgeLabel(overallSeverity);
   const isOnline = device.connectionStatus === "online";
 
@@ -80,11 +106,7 @@ export default function DeviceCard({
           <span className="text-slate-500">CO2 Reading:</span>
           <span
             className={`font-semibold text-right ${
-              getCo2Severity(readings.co2Ppm) === "danger"
-                ? "text-red-600"
-                : getCo2Severity(readings.co2Ppm) === "elevated"
-                ? "text-amber-600"
-                : "text-slate-800"
+              READING_COLOR_BY_SEVERITY[getCo2Severity(readings.co2Ppm, thresholds)]
             }`}
           >
             {readings.co2Ppm !== null ? `${readings.co2Ppm} ppm` : "N/A (no CO2 sensor)"}
@@ -94,11 +116,7 @@ export default function DeviceCard({
           <span className="text-slate-500">LPG Gas Reading:</span>
           <span
             className={`font-semibold text-right ${
-              getLpgSeverity(readings.lpgPpm) === "danger"
-                ? "text-red-600"
-                : getLpgSeverity(readings.lpgPpm) === "elevated"
-                ? "text-amber-600"
-                : "text-slate-800"
+              READING_COLOR_BY_SEVERITY[getLpgSeverity(readings.lpgPpm, thresholds)]
             }`}
           >
             {readings.lpgPpm !== null ? `${readings.lpgPpm} ppm` : "N/A (no gas sensor)"}

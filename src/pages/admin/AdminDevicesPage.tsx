@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Info, Plus, Trash2 } from "lucide-react";
 import { Badge, badgeStyles } from "../../ui";
+import { NO_DATA_LABEL } from "../../data/Data";
+import { SEVERITY_LABEL, SEVERITY_TONE, metricSeverity } from "../../lib/thresholdConfig";
 // Inline AddDeviceModal to avoid missing module import
 function AddDeviceModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (f: RoomForm) => void }) {
   const [name, setName] = useState("");
@@ -44,7 +46,10 @@ export interface User {
 }
 
 export interface Thresholds {
-  [key: string]: { min: number; max: number };
+  co2: { warning: number; high: number; danger: number };
+  lpg: { warning: number; high: number; danger: number };
+  temp: { freezeBelow: number; coolBelow: number; heatAbove: number };
+  humidity: { dryBelow: number; lowBelow: number; moldAbove: number };
 }
 
 export interface RoomForm {
@@ -52,16 +57,17 @@ export interface RoomForm {
 }
 
 function getStatus(room: Room, thresholds: Thresholds) {
-  const co2Threshold = thresholds.co2 || { min: 0, max: 1000 };
-  const value = room.co2 ?? 0;
-
-  if (value > co2Threshold.max) {
-    return { tone: "danger" as const, label: "High CO2" };
-  }
-  if (value > co2Threshold.max * 0.8) {
-    return { tone: "warning" as const, label: "Elevated CO2" };
-  }
-  return { tone: "success" as const, label: "Normal" };
+  // Graded by the shared module against the saved configuration, with an
+  // explicit no-data state. The previous version compared against a
+  // hardcoded { min: 0, max: 1000 } and treated a missing LPG reading as a
+  // measured zero, which rendered "Normal" for a device that had never
+  // reported anything.
+  const level = metricSeverity("co2", room.co2, thresholds);
+  if (room.co2 == null) return { tone: "neutral" as const, label: NO_DATA_LABEL };
+  return {
+    tone: SEVERITY_TONE[level],
+    label: SEVERITY_LABEL[level],
+  };
 }
 
 function volumeOf(room: Room) {

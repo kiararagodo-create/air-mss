@@ -20,7 +20,6 @@ import {
   METRIC_UNIT_SHORT,
   type DangerRow,
   type DayDetail,
-  type MetricKey,
 } from "../lib/reportQueries";
 import { fmtDayLong, REPORT_TZ, type ReportThresholds } from "../lib/reports";
 
@@ -31,8 +30,7 @@ interface DailyReportPanelProps {
   thresholds: ReportThresholds;
 }
 
-/** Which metric the single day chart is showing. */
-const CHART_METRIC: MetricKey = "co2";
+
 
 export default function DailyReportPanel({
   day,
@@ -77,8 +75,30 @@ export default function DailyReportPanel({
   }, [day, deviceId, rpcThresholds]);
 
   useEffect(() => {
-    loadDetail();
-  }, [loadDetail]);
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      setDangerPage(0);
+      try {
+        const d = await fetchDayDetail(day, deviceId, rpcThresholds);
+        // Clicking through the calendar faster than the network responds used
+        // to let a slower earlier request land last, showing one day's data
+        // under another day's heading.
+        if (!cancelled) setDetail(d);
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to load this day.");
+          setDetail(null);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [day, deviceId, rpcThresholds]);
 
   // ---- danger rows (paged at 250) -----------------------------------------
   const dangerTotal = detail?.danger_readings ?? 0;
@@ -134,11 +154,36 @@ export default function DailyReportPanel({
   // Nothing recorded: render nothing at all.
   if (!detail || detail.reading_count === 0) return null;
 
-  // ---- chart --------------------------------------------------------------
-  const chartPoints: ChartPoint[] = detail.series.map((p) => ({
-    t: new Date(p.t).getTime(),
-    v: p[CHART_METRIC],
-  }));
+  // ---- charts -------------------------------------------------------------
+  // One chart per metric the day actually recorded. Metrics with no readings
+  // are skipped entirely rather than drawn as a flat line at zero.
+  //
+  // Memoised on `detail` alone: ReportChart's useMemo keys on the identity of
+  // the points array, so rebuilding these arrays on every render would
+  // recompute the scale/segment/tick model for all four charts on every
+  // keystroke or pagination of the danger table.
+  const charts = useMemo(
+    () =>
+      METRIC_ORDER.map((m) => {
+        const points: ChartPoint[] = detail.series.map((p) => ({
+          t: new Date(p.t).getTime(),
+          v: p[m],
+        }));
+        return { metric: m, points, hasData: points.some((pt) => pt.v !== null) };
+      }).filter((c) => c.hasData),
+    [detail]
+  );
+
+  const formatX = useCallback(
+    (t: number) =>
+      new Date(t).toLocaleTimeString("en-GB", {
+        timeZone: REPORT_TZ,
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }),
+    []
+  );
 
   const first = dangerPage * DANGER_PAGE_SIZE;
   const last = Math.min(first + DANGER_PAGE_SIZE, dangerTotal);
@@ -179,24 +224,22 @@ export default function DailyReportPanel({
         </div>
       </div>
 
-      {/* Chart */}
+      {/* Charts */}
       <div className="bg-white rounded-xl border border-slate-200 p-4">
-        <ReportChart
-          title={`${METRIC_LABEL_SHORT[CHART_METRIC]} through the day`}
-          metric={CHART_METRIC}
-          thresholds={thresholds}
-          points={chartPoints}
-          dataLabel="5-minute averages"
-          height={260}
-          formatX={(t) =>
-            new Date(t).toLocaleTimeString("en-GB", {
-              timeZone: REPORT_TZ,
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: false,
-            })
-          }
-        />
+        <div className="divide-y divide-slate-100">
+          {charts.map(({ metric, points }) => (
+            <ReportChart
+              key={metric}
+              title={`${METRIC_LABEL_SHORT[metric]} through the day`}
+              metric={metric}
+              thresholds={thresholds}
+              points={points}
+              dataLabel="5-minute averages"
+              height={260}
+              formatX={formatX}
+            />
+          ))}
+        </div>
       </div>
 
       {/* Danger readings */}
@@ -258,8 +301,12 @@ export default function DailyReportPanel({
                     </td>
                   </tr>
                 ) : (
-                  dangerRows.map((r) => (
-                    <tr key={r.created_at} className="border-b border-slate-50 last:border-0">
+                  dangerRows.map((r, i) => (
+                    // report_day_danger_rows exposes no surrogate id and nothing guarantees
+                    // created_at is unique, so two readings landing in the same
+                    // batch share a key. Index-suffixed keys stay stable per row
+                    // position and avoid React dropping/reusing rows.
+                    <tr key={`${r.created_at}-${i}`} className="border-b border-slate-50 last:border-0">
                       <td className="py-2 pr-3 text-slate-600 whitespace-nowrap">
                         {fmtManila(r.created_at)}
                       </td>

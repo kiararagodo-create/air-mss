@@ -41,11 +41,80 @@ const PDF_CHART_BUCKET_SECONDS = 15 * 60;
 // flat 2-hour constant unrelated to the actual bucket size.)
 const GAP_MS = PDF_CHART_BUCKET_SECONDS * 1000 * 2;
 
-// Threshold constants — keep in sync with src/data/Data.ts and firmware.
-const CO2_WARN = 1000, CO2_DANGER = 3500;
-const LPG_WARN = 1000, LPG_DANGER = 5000;
-const TEMP_DANGER_LOW = 5, TEMP_DANGER_HIGH = 35;
-const HUM_DANGER_LOW = 20, HUM_DANGER_HIGH = 80;
+// --------------------------------------------------------------------------
+// Thresholds — READ FROM THE DATABASE, never from this file.
+//
+// Loaded once per run from public.platform_thresholds through the
+// resolve_thresholds() helper, so an admin editing the limits on the Settings
+// page changes the charts, the event counts and the interpretation in the next
+// archive without this bundle being redeployed.
+//
+// The literals below are FALLBACKS for the case where that call fails. They
+// mirror the reference guides and are deliberately kept in one place so they
+// cannot silently become the de-facto configuration. (They previously read
+// CO2 danger 3500 / LPG danger 5000, which stopped matching the firmware and
+// the guides the moment the LPG tiers were re-based on %LEL.)
+const FALLBACK_THRESHOLDS = {
+  co2_warning: 1000,
+  co2_high: 2000,
+  co2_danger: 3500,
+  lpg_warning: 1000,
+  lpg_high: 2100,
+  lpg_danger: 4200,
+  temp_freeze_below: 5,
+  temp_cool_below: 18,
+  temp_heat_above: 35,
+  humidity_dry_below: 20,
+  humidity_low_below: 30,
+  humidity_mold_above: 80,
+};
+
+let CO2_WARN = FALLBACK_THRESHOLDS.co2_warning;
+let CO2_DANGER = FALLBACK_THRESHOLDS.co2_danger;
+let LPG_WARN = FALLBACK_THRESHOLDS.lpg_warning;
+let LPG_DANGER = FALLBACK_THRESHOLDS.lpg_danger;
+let TEMP_DANGER_LOW = FALLBACK_THRESHOLDS.temp_freeze_below;
+let TEMP_DANGER_HIGH = FALLBACK_THRESHOLDS.temp_heat_above;
+let HUM_DANGER_LOW = FALLBACK_THRESHOLDS.humidity_dry_below;
+let HUM_DANGER_HIGH = FALLBACK_THRESHOLDS.humidity_mold_above;
+
+/** Point every module-level threshold at the saved configuration. */
+function applyThresholds(t: Record<string, unknown>, source: string): void {
+  const num = (key: keyof typeof FALLBACK_THRESHOLDS) => {
+    const v = Number(t[key]);
+    return Number.isFinite(v) ? v : FALLBACK_THRESHOLDS[key];
+  };
+  CO2_WARN = num("co2_warning");
+  CO2_DANGER = num("co2_danger");
+  LPG_WARN = num("lpg_warning");
+  LPG_DANGER = num("lpg_danger");
+  TEMP_DANGER_LOW = num("temp_freeze_below");
+  TEMP_DANGER_HIGH = num("temp_heat_above");
+  HUM_DANGER_LOW = num("humidity_dry_below");
+  HUM_DANGER_HIGH = num("humidity_mold_above");
+  console.log(
+    `Thresholds loaded (${source}): CO2 ${CO2_WARN}/${CO2_DANGER} ppm, LPG ${LPG_WARN}/${LPG_DANGER} ppm, ` +
+      `temp ${TEMP_DANGER_LOW}/${TEMP_DANGER_HIGH} °C, humidity ${HUM_DANGER_LOW}/${HUM_DANGER_HIGH} %`
+  );
+}
+
+async function loadThresholds(
+  admin: ReturnType<typeof createClient>,
+  at: string | null = null
+): Promise<void> {
+  const { data, error } = await admin.rpc("resolve_thresholds", { p_at: at });
+  if (error || !data) {
+    // Not fatal: the archive still runs, but the report says so explicitly
+    // rather than implying these numbers were the configured ones.
+    console.warn(
+      "Could not read saved thresholds; falling back to the built-in reference values:",
+      error?.message ?? "no data"
+    );
+    applyThresholds(FALLBACK_THRESHOLDS, "built-in fallback");
+    return;
+  }
+  applyThresholds(data as Record<string, unknown>, String((data as any).threshold_source ?? "saved"));
+}
 
 // --------------------------------------------------------------------------
 // LEGAL paper dimensions (8.5 x 14 inches, portrait, in PDF points).
@@ -850,6 +919,11 @@ async function deleteArchivedReadings(
 // MAIN ORCHESTRATION
 // ----------------------------------------------------------------------
 async function runArchive(admin: ReturnType<typeof createClient>) {
+  // Resolve the saved configuration before anything is measured, so every chart
+  // axis, event query and interpretation below grades against the same values
+  // the dashboard is showing.
+  await loadThresholds(admin);
+
   console.log("Step 1: fetchCandidatePeriods");
   const candidates = await fetchCandidatePeriods(admin);
   console.log("Candidates:", JSON.stringify(candidates));

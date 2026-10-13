@@ -54,9 +54,16 @@ export function renderChartToDataUrl(opts: CanvasChartOptions): string {
   const plotW = width - padL - padR;
   const plotH = height - padT - padB;
 
-  const values = points.map((p) => p.value).filter((v): v is number => v !== null);
+  // `!== null` alone lets undefined and NaN through, and a single one of those
+  // poisons Math.min/Math.max with NaN, which propagates into every coordinate.
+  // Canvas silently ignores moveTo(NaN, NaN), so the result is a completely
+  // blank chart with grid lines and no series and no error anywhere. Only
+  // genuinely finite numbers may define the scale.
+  const values = points
+    .map((p) => p.value)
+    .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
   const thresholds = [thresholdHigh, thresholdLow].filter(
-    (v): v is number => v !== null && v !== undefined
+    (v): v is number => typeof v === "number" && Number.isFinite(v)
   );
   if (values.length === 0) return "";
 
@@ -127,7 +134,8 @@ export function renderChartToDataUrl(opts: CanvasChartOptions): string {
   ctx.beginPath();
   let penDown = false;
   points.forEach((p, i) => {
-    if (p.value === null) {
+    // Must match the filter above: anything non-finite is a gap, not a point.
+    if (p.value == null || !Number.isFinite(p.value)) {
       penDown = false;
       return;
     }

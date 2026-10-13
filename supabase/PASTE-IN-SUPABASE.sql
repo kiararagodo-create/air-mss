@@ -1,11 +1,69 @@
 -- ============================================================================
--- A.I.R. - remaining production hardening. Paste into Supabase SQL editor, Run.
+-- A.I.R. - remaining production hardening, v2. Paste into Supabase SQL editor.
 -- Idempotent: safe to run twice, and safe to re-run after a partial failure.
+--
+-- v2 adds PART 0 because the live database has no public.platform_thresholds
+-- table at all, so v1 aborted at line 11. Every other statement in v1 is
+-- unchanged.
 -- ============================================================================
 
 
 -- ============================================================================
--- PART 1 - saved thresholds: ordering constraints + canonical values
+-- PART 0 - diagnostic: what actually exists right now
+-- Run this on its own first if you want to see the state before changing it.
+-- ============================================================================
+
+select c.relname as table, c.relrowsecurity as rls
+from pg_class c join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public'
+  and c.relname in ('platform_thresholds','rooms','readings','notifications','profiles','threshold_history')
+order by 1;
+
+select p.proname
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public'
+  and p.proname in ('report_thresholds','resolve_thresholds','report_calendar_month',
+                    'report_day_detail','report_month_stats','report_day_danger_rows')
+order by 1;
+
+
+-- ============================================================================
+-- PART 1 - CREATE the missing platform_thresholds table
+--
+-- 20260911000000_thresholds_table.sql was never applied to this project. The
+-- dashboard still worked because RoomsContext catches the read error and falls
+-- back to DEFAULT_THRESHOLDS - silently, with no banner. So the Settings page
+-- was writing to nothing and the "saved configuration" shown in the defence
+-- guide did not exist.
+--
+-- Definition is byte-identical to 20260911000000. Columns are integer, which is
+-- why the reference values are whole numbers.
+-- ============================================================================
+
+create table if not exists public.platform_thresholds (
+  id          integer primary key default 1,
+  co2_warning integer not null,
+  co2_high    integer not null,
+  co2_danger  integer not null,
+  lpg_warning integer not null,
+  lpg_high    integer not null,
+  lpg_danger  integer not null,
+  temp_freeze_below integer not null,
+  temp_cool_below   integer not null,
+  temp_heat_above   integer not null,
+  humidity_dry_below   integer not null,
+  humidity_low_below   integer not null,
+  humidity_mold_above  integer not null,
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists platform_thresholds_single_row
+  on public.platform_thresholds (id);
+
+
+-- ============================================================================
+-- PART 2 - ordering constraints + canonical reference values
+-- Normalise first, because `add constraint` validates existing rows.
 -- ============================================================================
 
 update public.platform_thresholds
@@ -66,7 +124,7 @@ on conflict (id) do update set
 
 
 -- ============================================================================
--- PART 2 - report_thresholds() / resolve_thresholds()
+-- PART 3 - report_thresholds() / resolve_thresholds()
 -- The old LPG fallback was 5000 ppm, so any caller that omitted thresholds
 -- scored LPG readings against a limit the device no longer uses.
 -- ============================================================================
@@ -140,7 +198,7 @@ $$;
 
 
 -- ============================================================================
--- PART 3 - repair the three broken report function bodies
+-- PART 4 - repair the three broken report function bodies
 --
 -- `date + integer` adds DAYS in PostgreSQL, so report_calendar_month and
 -- report_month_stats bounded a "month" with a single day and returned one row.
@@ -216,7 +274,7 @@ $$;
 
 
 -- ============================================================================
--- PART 4 - revoke PUBLIC from every report_* function
+-- PART 5 - revoke PUBLIC from every report_* function
 --
 -- CREATE FUNCTION grants EXECUTE to PUBLIC by default and `anon` is an implicit
 -- member of it, so `REVOKE ... FROM anon` removed nothing. Your live project
@@ -241,9 +299,7 @@ $$;
 
 
 -- ============================================================================
--- PART 5 - the two access predicates
--- is_active_admin(): role + approved + active.
--- is_approved_account(): approved + active, role-independent.
+-- PART 6 - the two access predicates
 -- GoTrue knows nothing about profiles.account_status, so sign-in succeeds for a
 -- pending self-registered account. Previously only the React login() rejected
 -- it - in the same tab as the devtools.
@@ -287,7 +343,7 @@ grant execute on function public.is_approved_account() to authenticated;
 
 
 -- ============================================================================
--- PART 6 - RLS on public.rooms and public.readings
+-- PART 7 - RLS on public.rooms and public.readings
 --
 -- Neither table had RLS at all (both were created outside this repository).
 -- The only thing stopping any signed-in account from
@@ -334,10 +390,10 @@ create policy "authenticated can read readings"
 
 
 -- ============================================================================
--- PART 7 - platform_thresholds: drop the permissive writes, then go admin-only
--- 20260911000000 granted writes to ALL authenticated users, so any signed-in
--- account including pending could rewrite the CO2/LPG alarm limits. Policies OR
--- together, so the old ones must be dropped first.
+-- PART 8 - platform_thresholds: drop the permissive writes, then go admin-only
+-- The original policies granted write to ALL authenticated users, so any
+-- signed-in account including pending could rewrite the CO2/LPG alarm limits.
+-- Policies OR together, so the old ones must be dropped first.
 -- ============================================================================
 
 alter table public.platform_thresholds enable row level security;
@@ -368,26 +424,37 @@ create policy "admins can delete platform_thresholds"
 
 
 -- ============================================================================
--- PART 8 - notifications RLS compared uuid to text
+-- PART 9 - notifications RLS compared uuid to text
+--
 -- notifications.user_id is text; auth.uid() returns uuid. PostgreSQL has no
 -- `uuid = text` operator, so every read RAISED and the bell silently showed
 -- nothing, with the error swallowed into a console.error.
+--
+-- Guarded because 20260911010000 may not have been applied either.
 -- ============================================================================
 
-drop policy if exists "users can read own notifications" on public.notifications;
-create policy "users can read own notifications"
-  on public.notifications for select to authenticated
-  using (auth.uid()::text = user_id);
-
-drop policy if exists "users can update own notifications" on public.notifications;
-create policy "users can update own notifications"
-  on public.notifications for update to authenticated
-  using (auth.uid()::text = user_id)
-  with check (auth.uid()::text = user_id);
+do $$
+begin
+  if to_regclass('public.notifications') is not null then
+    execute $p$drop policy if exists "users can read own notifications" on public.notifications$p$;
+    execute $p$create policy "users can read own notifications"
+             on public.notifications for select to authenticated
+             using (auth.uid()::text = user_id)$p$;
+    execute $p$drop policy if exists "users can update own notifications" on public.notifications$p$;
+    execute $p$create policy "users can update own notifications"
+             on public.notifications for update to authenticated
+             using (auth.uid()::text = user_id)
+             with check (auth.uid()::text = user_id)$p$;
+    raise notice 'notifications RLS repaired';
+  else
+    raise warning 'public.notifications does not exist - skipped (20260911010000 not applied)';
+  end if;
+end
+$$;
 
 
 -- ============================================================================
--- PART 9 - approval-guarded wrappers for the two RPCs the UI calls
+-- PART 10 - approval-guarded wrappers for the two RPCs the UI calls
 -- SECURITY INVOKER underneath, so the readings policy already applies; these
 -- make the requirement explicit at the entry point and return a clear message
 -- instead of an empty result set.
@@ -433,11 +500,11 @@ grant execute on function public.report_thresholds(jsonb) to authenticated;
 
 
 -- ============================================================================
--- PART 10 - realtime
--- Only platform_thresholds was ever published, yet the client subscribes to
--- rooms and notifications too; those subscriptions succeeded and delivered
--- nothing. rooms has no polling fallback, so a device added in another tab
--- never appeared. Safe only now that those tables have real RLS.
+-- PART 11 - realtime
+-- Only platform_thresholds could ever have been published, yet the client
+-- subscribes to rooms and notifications too; those subscriptions succeeded and
+-- delivered nothing. rooms has no polling fallback, so a device added in
+-- another tab never appeared. Safe only now that those tables have real RLS.
 -- readings is deliberately NOT published: at a 3s cadence that would push every
 -- row of every device to every client, and the 2s latest-row poll covers it.
 -- ============================================================================
@@ -453,9 +520,12 @@ begin
        where pubname='supabase_realtime' and schemaname='public' and tablename='rooms') then
       alter publication supabase_realtime add table public.rooms;
     end if;
-    if not exists (select 1 from pg_publication_tables
-       where pubname='supabase_realtime' and schemaname='public' and tablename='notifications') then
-      alter publication supabase_realtime add table public.notifications;
+    if exists (select 1 from pg_class c join pg_namespace n on n.oid=c.relnamespace
+               where n.nspname='public' and c.relname='notifications') then
+      if not exists (select 1 from pg_publication_tables
+         where pubname='supabase_realtime' and schemaname='public' and tablename='notifications') then
+        alter publication supabase_realtime add table public.notifications;
+      end if;
     end if;
   else
     raise warning 'supabase_realtime publication not found - skipped';
@@ -482,7 +552,7 @@ from pg_proc p join pg_namespace n on n.oid = p.pronamespace
 where n.nspname = 'public' and p.proname like 'report\_%'
   and has_function_privilege('authenticated', p.oid, 'EXECUTE');
 
--- [want t, t, t, t] RLS must be on everywhere
+-- [want t for every row] RLS must be on everywhere
 select relname, relrowsecurity from pg_class
 where relname in ('rooms','readings','notifications','platform_thresholds')
 order by relname;
@@ -506,5 +576,6 @@ where n.nspname='public'
                     'is_approved_account','is_active_admin')
 order by p.proname;
 
--- [want 1000/2000/3500, 1000/2100/4200, 5/18/35, 20/30/80]
+-- [want 1000/2000/3500, 1000/2100/4200, 5/18/35, 20/30/80] - the table was
+-- created in this run, so this is the first time these values have been saved.
 select * from public.platform_thresholds where id = 1;

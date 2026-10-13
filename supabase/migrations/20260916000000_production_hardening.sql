@@ -111,6 +111,40 @@ $$;
 -- barrier once the readings table itself has RLS (section 4 below).
 -- ---------------------------------------------------------------------------
 
+-- The live project also carries four report_* functions that no migration in
+-- this repository creates - report_latest_reading, report_year_months,
+-- report_refresh_daily and report_refresh_recent. They were found by querying
+-- pg_proc directly, which means the database has drifted from the repo and
+-- those definitions are not under version control.
+--
+-- They are revoked here dynamically rather than by name-and-signature, because
+-- an explicit revoke needs the exact argument types and those are unknown for
+-- functions we do not have the source for. Over-revoking from PUBLIC is
+-- harmless; under-revoking is the vulnerability. They stay executable for
+-- `authenticated`, so if the app needs them nothing breaks.
+--
+-- Re-run this migration after the drift is resolved: any new report_* function
+-- added straight in the SQL editor will re-open the PUBLIC grant, because
+-- CREATE FUNCTION always grants it.
+do $$
+declare
+  r record;
+begin
+  for r in
+    select p.oid::regprocedure as sig
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.proname like 'report\_%'
+  loop
+    execute format('revoke execute on function %s from public', r.sig);
+  end loop;
+end
+$$;
+
+-- Named revokes for the functions this repository does own, so the grant
+-- surface stays readable in review even though the loop above is the
+-- belt-and-braces pass.
 revoke execute on function public.report_thresholds(jsonb) from public;
 revoke execute on function public.report_is_danger(numeric, numeric, numeric, numeric, jsonb) from public;
 revoke execute on function public.report_triggered_by(numeric, numeric, numeric, numeric, jsonb) from public;

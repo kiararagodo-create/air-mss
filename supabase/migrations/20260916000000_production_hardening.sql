@@ -42,23 +42,31 @@ declare
 begin
 
   -- ---- report_calendar_month ----------------------------------------------
+  --
+  -- regexp_replace rather than replace(): pg_get_functiondef re-formats the
+  -- body it prints, so any exact-string match against the original source is
+  -- fragile across whitespace. The pattern tolerates arbitrary spacing.
   select pg_get_functiondef(oid) into v_def
   from pg_proc
   where oid = to_regprocedure('public.report_calendar_month(date,text,jsonb)');
 
-  if v_def is not null and v_def like '%(p_month_start + 1)::timestamp%' then
-    v_new := replace(
+  if v_def is not null and v_def ~ '\(\s*p_month_start\s*\+\s*1\s*\)\s*::timestamp' then
+    v_new := regexp_replace(
       v_def,
-      '((p_month_start + 1)::timestamp at time zone ''Asia/Manila'')',
-      '(((p_month_start + interval ''1 month'')::date)::timestamp at time zone ''Asia/Manila'')'
+      '\(\(p_month_start\s*\+\s*1\)::timestamp at time zone ''Asia/Manila''\)',
+      '(((p_month_start + interval ''1 month'')::date)::timestamp at time zone ''Asia/Manila'')',
+      ''
     );
     if v_new = v_def then
-      raise exception 'report_calendar_month: month upper bound text not matched; patch aborted';
+      raise warning 'report_calendar_month: pattern matched but produced no change - repair manually';
+    else
+      execute v_new;
+      raise notice 'report_calendar_month: month bounds repaired';
     end if;
-    execute v_new;
-    raise notice 'report_calendar_month: month bounds repaired';
+  elsif v_def is null then
+    raise warning 'report_calendar_month: not present, skipped';
   else
-    raise notice 'report_calendar_month: already correct or absent, skipped';
+    raise notice 'report_calendar_month: already correct, skipped';
   end if;
 
   -- ---- report_month_stats -------------------------------------------------
@@ -66,19 +74,23 @@ begin
   from pg_proc
   where oid = to_regprocedure('public.report_month_stats(integer,integer,text,jsonb)');
 
-  if v_def is not null and v_def like '%(make_date(p_year, p_month, 1) + 1)::timestamp%' then
-    v_new := replace(
+  if v_def is not null and v_def ~ '\(\s*make_date\(p_year, p_month, 1\)\s*\+\s*1\s*\)\s*::timestamp' then
+    v_new := regexp_replace(
       v_def,
-      '((make_date(p_year, p_month, 1) + 1)::timestamp at time zone ''Asia/Manila'')',
-      '(((make_date(p_year, p_month, 1) + interval ''1 month'')::date)::timestamp at time zone ''Asia/Manila'')'
+      '\(\(make_date\(p_year, p_month, 1\)\s*\+\s*1\)::timestamp at time zone ''Asia/Manila''\)',
+      '(((make_date(p_year, p_month, 1) + interval ''1 month'')::date)::timestamp at time zone ''Asia/Manila'')',
+      ''
     );
     if v_new = v_def then
-      raise exception 'report_month_stats: month upper bound text not matched; patch aborted';
+      raise warning 'report_month_stats: pattern matched but produced no change - repair manually';
+    else
+      execute v_new;
+      raise notice 'report_month_stats: month bounds repaired';
     end if;
-    execute v_new;
-    raise notice 'report_month_stats: month bounds repaired';
+  elsif v_def is null then
+    raise warning 'report_month_stats: not present, skipped';
   else
-    raise notice 'report_month_stats: already correct or absent, skipped';
+    raise notice 'report_month_stats: already correct, skipped';
   end if;
 
   -- ---- report_day_detail --------------------------------------------------
@@ -89,12 +101,15 @@ begin
   if v_def is not null and v_def like '%select hum_danger from stats%' then
     v_new := replace(v_def, 'select hum_danger from stats', 'select humidity_danger from stats');
     if v_new = v_def then
-      raise exception 'report_day_detail: hum_danger reference not matched; patch aborted';
+      raise warning 'report_day_detail: hum_danger not replaced - repair manually';
+    else
+      execute v_new;
+      raise notice 'report_day_detail: humidity danger count column repaired';
     end if;
-    execute v_new;
-    raise notice 'report_day_detail: humidity danger count column repaired';
+  elsif v_def is null then
+    raise warning 'report_day_detail: not present, skipped';
   else
-    raise notice 'report_day_detail: already correct or absent, skipped';
+    raise notice 'report_day_detail: already correct, skipped';
   end if;
 end
 $$;

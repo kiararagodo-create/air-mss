@@ -151,6 +151,38 @@ export function toRpcThresholds(th: {
 // Queries
 // ---------------------------------------------------------------------------
 
+/**
+ * Calls an approval-guarded RPC, falling back to the unguarded original if the
+ * wrapper has not been created yet.
+ *
+ * The guard lives in `20260916000000_production_hardening.sql`. Until that
+ * migration is applied to a project, PostgREST rejects the call with PGRST202
+ * ("Could not find the function") and the whole Reports page would go dark.
+ * This keeps the deploy order-independent: the frontend can ship first.
+ *
+ * The fallback is safe. It is not a hole in the guard, because the underlying
+ * functions are SECURITY INVOKER and read public.readings, whose RLS policy
+ * independently requires is_approved_account(). The wrapper only makes that
+ * requirement explicit at the entry point and returns a clear message instead
+ * of an empty result.
+ */
+async function rpcWithApprovalGuard<T>(
+  guarded: string,
+  unguarded: string,
+  params: Record<string, unknown>
+): Promise<T> {
+  const first = await supabase.rpc(guarded, params);
+  if (!first.error) return first.data as T;
+
+  // PGRST202 = the wrapper is not in the schema cache yet.
+  if (first.error.code === "PGRST202") {
+    const fallback = await supabase.rpc(unguarded, params);
+    if (!fallback.error) return fallback.data as T;
+    throw new Error(fallback.error.message);
+  }
+  throw new Error(first.error.message);
+}
+
 /** Per-day counts for one month - drives the calendar dots. */
 export async function fetchCalendarMonth(
   monthStart: string,
@@ -172,18 +204,21 @@ export async function fetchDayDetail(
   deviceId: string | null,
   thresholds: Record<string, number>
 ): Promise<DayDetail> {
-  const { data, error } = await supabase.rpc("report_day_detail_approved", {
-    p_day: day,
-    p_device_id: deviceId,
-    p_thresholds: thresholds,
-    p_bucket_seconds: 300,
-  });
-  if (error) throw new Error(error.message);
+  const data = await rpcWithApprovalGuard<DayDetail>(
+    "report_day_detail_approved",
+    "report_day_detail",
+    {
+      p_day: day,
+      p_device_id: deviceId,
+      p_thresholds: thresholds,
+      p_bucket_seconds: 300,
+    }
+  );
   // PostgREST returns null - not an error - when an RPC yields no value or is
   // missing from the schema cache. Casting that null to DayDetail let the day
   // panel silently render nothing instead of reporting the failure.
-  if (!data) throw new Error("report_day_detail_approved returned no data.");
-  return data as DayDetail;
+  if (!data) throw new Error("report_day_detail returned no data.");
+  return data;
 }
 
 /** One page of danger readings for a day. */
@@ -211,15 +246,18 @@ export async function fetchMonthStats(
   deviceId: string | null,
   thresholds: Record<string, number>
 ): Promise<MonthStats> {
-  const { data, error } = await supabase.rpc("report_month_stats_approved", {
-    p_year: year,
-    p_month: month,
-    p_device_id: deviceId,
-    p_thresholds: thresholds,
-  });
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("report_month_stats_approved returned no data.");
-  return data as MonthStats;
+  const stats = await rpcWithApprovalGuard<MonthStats>(
+    "report_month_stats_approved",
+    "report_month_stats",
+    {
+      p_year: year,
+      p_month: month,
+      p_device_id: deviceId,
+      p_thresholds: thresholds,
+    }
+  );
+  if (!stats) throw new Error("report_month_stats returned no data.");
+  return stats;
 }
 
 // ---------------------------------------------------------------------------

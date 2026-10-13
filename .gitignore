@@ -12,3 +12,8 @@ supabase/.temp/
 
 .kilo/
 test.txt
+
+# Microsoft Office lock/owner files - these appear when a .docx/.md is open in
+# Word and are not source. One was committed to docs/ by accident.
+~$*
+.~lock.*

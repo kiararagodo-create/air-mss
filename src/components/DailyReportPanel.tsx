@@ -126,6 +126,42 @@ export default function DailyReportPanel({
     };
   }, [day, deviceId, rpcThresholds, dangerPage, dangerTotal]);
 
+  // ---- charts -------------------------------------------------------------
+  // One chart per metric the day actually recorded. Metrics with no readings
+  // are skipped entirely rather than drawn as a flat line at zero.
+  //
+  // These hooks MUST sit above the early returns below. A hook that is reached
+  // conditionally changes the hook count between renders, and React throws
+  // "Rendered fewer hooks than expected" and unmounts the whole tree - which
+  // presented as a blank white page whenever a calendar day with no readings
+  // was selected, because that path returns null.
+  //
+  // Memoised on `detail` alone: ReportChart's useMemo keys on the identity of
+  // the points array, so rebuilding these arrays on every render would
+  // recompute the scale/segment/tick model for all four charts on every
+  // keystroke or pagination of the danger table.
+  const charts = useMemo(() => {
+    const series = detail?.series ?? [];
+    return METRIC_ORDER.map((m) => {
+      const points: ChartPoint[] = series.map((p) => ({
+        t: new Date(p.t).getTime(),
+        v: p[m],
+      }));
+      return { metric: m, points, hasData: points.some((pt) => pt.v !== null) };
+    }).filter((c) => c.hasData);
+  }, [detail]);
+
+  const formatX = useCallback(
+    (t: number) =>
+      new Date(t).toLocaleTimeString("en-GB", {
+        timeZone: REPORT_TZ,
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }),
+    []
+  );
+
   // ---- early exits --------------------------------------------------------
   if (loading) {
     return (
@@ -153,37 +189,6 @@ export default function DailyReportPanel({
 
   // Nothing recorded: render nothing at all.
   if (!detail || detail.reading_count === 0) return null;
-
-  // ---- charts -------------------------------------------------------------
-  // One chart per metric the day actually recorded. Metrics with no readings
-  // are skipped entirely rather than drawn as a flat line at zero.
-  //
-  // Memoised on `detail` alone: ReportChart's useMemo keys on the identity of
-  // the points array, so rebuilding these arrays on every render would
-  // recompute the scale/segment/tick model for all four charts on every
-  // keystroke or pagination of the danger table.
-  const charts = useMemo(
-    () =>
-      METRIC_ORDER.map((m) => {
-        const points: ChartPoint[] = detail.series.map((p) => ({
-          t: new Date(p.t).getTime(),
-          v: p[m],
-        }));
-        return { metric: m, points, hasData: points.some((pt) => pt.v !== null) };
-      }).filter((c) => c.hasData),
-    [detail]
-  );
-
-  const formatX = useCallback(
-    (t: number) =>
-      new Date(t).toLocaleTimeString("en-GB", {
-        timeZone: REPORT_TZ,
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-      }),
-    []
-  );
 
   const first = dangerPage * DANGER_PAGE_SIZE;
   const last = Math.min(first + DANGER_PAGE_SIZE, dangerTotal);

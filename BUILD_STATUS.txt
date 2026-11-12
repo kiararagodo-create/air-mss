@@ -1,0 +1,40 @@
+A.I.R. IoT Air Quality Monitoring System - Build Status
+=========================================================
+
+BUILD: OK (npx tsc --noEmit passes with zero errors)
+
+COMPLETED STEPS:
+- Step 2: SMS provider migrated Movider → iProg
+  - send-sms-alert/index.ts: iProg API, phone normalization, timeout, error mapping, per-recipient results
+  - sms-provider.ts: normalizeForProvider → 09XXXXXXXXX format
+  - air_alerts.ts: normalizePhPhone updated for iProG
+
+- Step 4: Frontend updates
+  - SendSmsDialog.tsx: "via iProg SMS" text, auth error message
+  - NotificationsPage.tsx: SMS credits indicator, test button, per-recipient results
+
+- Step 5: PDF report rewrite
+  - monthlyPdf.ts: didParseCell status colors, "Last updated" header, header repetition, page numbers, charts with thresholds
+
+- Step 6: SQL migration
+  - DEPLOY-AIR-NOTIFICATIONS.sql: notification_actions CHECK constraint includes 'repaired' and 'sms_sent'
+
+- Step 7: Auth safety
+  - ProtectedRoute.tsx: 15s loading timeout fallback to /login
+  - ErrorBoundary: real error text display
+  - AuthContext: .finally() blocks ensure loading terminates
+
+REMAINING PRE-EXISTING TS ERRORS (untouched):
+- RoomManagementPage.tsx (30+ errors: unused imports, type mismatches)
+- SMSRecipientsPage.tsx (25+ errors: unused vars, type mismatches)
+- database.types.ts (5 errors: jsonb/timestamptz)
+- ui.tsx (8 errors: _props unused)
+
+DEPLOYMENT COMMANDS:
+1. npx supabase secrets set IPROG_SMS_API_TOKEN=PASTE_TOKEN_HERE
+2. npx supabase functions deploy send-sms-alert --no-verify-jwt
+3. npx supabase functions deploy send-sms --no-verify-jwt
+4. Supabase Dashboard → Settings → Webhooks → INSERT on public.readings → air-alerts function
+5. Test: Send test SMS, trigger fake danger reading, check alert_log
+
+FILES MODIFIED: ~20 files across supabase/functions/, src/, src/lib/, src/components/, src/pages/, src/context/, src/routes/

@@ -92,10 +92,8 @@ export function maskedKey(key: string): string {
 }
 
 export function getSmsConfig(): SmsConfig {
-  const rawProvider = (Deno.env.get("SMS_PROVIDER") ?? "semaphore").trim().toLowerCase();
-  const provider = (["semaphore", "philsms", "iprog", "movider"].includes(rawProvider)
-    ? rawProvider
-    : "semaphore") as SmsProviderName;
+  // iProg is the only supported provider for this project.
+  const provider: SmsProviderName = "iprog";
   const cfg: SmsConfig = {
     provider,
     providerLabel: LABELS[provider],
@@ -109,8 +107,8 @@ export function getSmsConfig(): SmsConfig {
       token: sanitizeSecret(Deno.env.get("PHILSMS_API_TOKEN")),
       senderId: sanitizeSecret(Deno.env.get("PHILSMS_SENDER_ID")) || "PhilSMS",
     },
-    iprog: {
-      token: sanitizeSecret(Deno.env.get("IPROG_API_TOKEN") ?? Deno.env.get("IPROG_SMS_API_TOKEN")),
+      iprog: {
+      token: sanitizeSecret(Deno.env.get("IPROG_SMS_API_TOKEN")),
     },
     }
   return cfg;
@@ -230,11 +228,24 @@ async function sendIprog(cfg: SmsConfig, to: string, message: string): Promise<S
   const text = await res.text();
   let data: any = null;
   try { data = JSON.parse(text); } catch { /* keep raw text below */ }
-  if (!res.ok) return fail("iprog", `HTTP ${res.status}: ${text}`.slice(0, 500), data ?? text);
-  if (data?.status !== "submitted") return fail("iprog", `${data?.error ?? data?.message ?? "Unknown iProg error"}`.slice(0, 500));
+  console.log(`sms-provider iprog: secret=IPROG_SMS_API_TOKEN dry_run=${cfg.dryRun} http_status=${res.status} json_status=${data?.status ?? "null"} message=${String(data?.message ?? "").slice(0, 200)}`);
+  if (!res.ok) {
+    console.error(`iProg SMS failed: HTTP ${res.status} ${data?.message ?? data?.error ?? text}`.slice(0, 300));
+    return fail("iprog", `HTTP ${res.status}: ${text}`.slice(0, 500), data ?? text);
+  }
+  const okStatus = data?.status === 200 || data?.status === "200" || String(data?.status ?? "").toLowerCase() === "success";
+  if (!okStatus || data?.error || data?.errors) {
+    const msg = String(data?.message ?? data?.error ?? data?.errors ?? "Unknown iProg error").slice(0, 500);
+    console.error(`iProg SMS failed: status ${data?.status ?? res.status} ${msg}`.slice(0, 300));
+    return fail("iprog", msg, data ?? text);
+  }
+  if (data?.message_id == null) {
+    console.error(`iProg SMS failed: status ${data?.status ?? res.status} missing message_id`);
+    return fail("iprog", `${data?.message ?? "iProg response missing message_id"}`.slice(0, 500), data ?? text);
+  }
   return {
     ok: true, provider: "iprog",
-    providerMessageId: data?.message_id != null ? String(data.message_id) : null,
+    providerMessageId: String(data.message_id),
     status: "submitted", raw: data ?? text, error: null,
   };
 }
@@ -323,9 +334,9 @@ async function sendMovider(cfg: SmsConfig, to: string, message: string): Promise
 
 /** The single send entry point. `to` may be in any PH format; it is
  *  normalized to the selected provider's required format internally. */
-export async function sendSms(opts: { to: string; message: string }): Promise<SmsResult> {
+export async function sendSms(opts: { to: string; message: string }, ignoreDryRun = false): Promise<SmsResult> {
   const cfg = getSmsConfig();
-  if (cfg.dryRun) {
+  if (cfg.dryRun && !ignoreDryRun) {
     return {
       ok: true, provider: cfg.provider, providerMessageId: null, status: "dry_run",
       raw: { dry_run: true, provider: cfg.provider, to: opts.to }, error: null,
@@ -336,9 +347,8 @@ export async function sendSms(opts: { to: string; message: string }): Promise<Sm
     return fail(cfg.provider, msg);
   }
   switch (cfg.provider) {
-    case "philsms": return sendPhilsms(cfg, opts.to, opts.message);
     case "iprog": return sendIprog(cfg, opts.to, opts.message);
-    default: return sendSemaphore(cfg, opts.to, opts.message);
+    default: return sendIprog(cfg, opts.to, opts.message);
   }
 }
 
@@ -373,18 +383,23 @@ export function mapIprogError(errName: string | null | undefined, fallback?: str
  * `authError` is set when the balance call itself proves the credentials are
  * wrong (HTTP 401 / ERR_AUTHENTICATION_FAILED), so the UI can tell the
  * Administrator to fix the secrets instead of showing a raw error code. */
-export async function getSmsCredits(): Promise<{ credits: number | null; provider: SmsProviderName; providerLabel: string; authError: string | null }> {
+export async function getSmsCredits(ignoreDryRun = false): Promise<{ credits: number | null; tokenValid: boolean; provider: SmsProviderName; providerLabel: string; authError: string | null }> {
   const cfg = getSmsConfig();
-  const base = { credits: null, provider: cfg.provider, providerLabel: cfg.providerLabel, authError: null as string | null };
-  if (cfg.dryRun) return base;
+  const base = { credits: null, tokenValid: false, provider: cfg.provider, providerLabel: cfg.providerLabel, authError: null as string | null };
+  if (cfg.dryRun && !ignoreDryRun) return base;
   if (cfg.missing.length) return base;
-  try {
+   try {
+    let parsedCache: any = null;
     // helper: a 401 (or an ERR_AUTHENTICATION_FAILED body) proves bad credentials.
     const authCheck = async (res: Response): Promise<string | null> => {
       if (res.status === 401) return `HTTP 401 authentication failed`;
-      if (res.ok) return null;
       const bodyText = await res.text().catch(() => "");
       const parsed: any = (() => { try { return JSON.parse(bodyText); } catch { return null; } })();
+      parsedCache = parsed;
+      // iProg reports an invalid token as { status: 500, message: "Invalid Token" }.
+      const msg = String(parsed?.message ?? parsed?.error ?? bodyText ?? "");
+      if (/invalid token/i.test(msg)) return msg.slice(0, 200);
+      if (res.ok) return null;
       const err = mapIprogError(parsed?.error ?? parsed?.message ?? null) ?? parsed?.message ?? bodyText;
       return /auth/i.test(String(err ?? "")) ? String(err).slice(0, 200) : null;
     };
@@ -392,26 +407,38 @@ export async function getSmsCredits(): Promise<{ credits: number | null; provide
     if (cfg.provider === "semaphore") {
       const res = await fetch(`https://api.semaphore.co/api/v4/account?apikey=${encodeURIComponent(cfg.semaphore.apiKey)}`);
       const authError = await authCheck(res);
-      if (!res.ok) return { ...base, authError };
-      const data: any = await res.json();
+      if (!res.ok) return { ...base, tokenValid: false, authError };
+      if (parsedCache?.status === 500 && /invalid token/i.test(String(parsedCache?.message ?? ""))) {
+        return { ...base, tokenValid: false, authError: String(parsedCache.message).slice(0, 200) };
+      }
+      const data: any = parsedCache;
       const credits = Number(data?.credit_balance);
-      return { ...base, credits: Number.isFinite(credits) ? credits : null };
+      return { ...base, tokenValid: true, credits: Number.isFinite(credits) ? credits : null };
     }
     if (cfg.provider === "philsms") {
       const res = await fetch("https://app.philsms.com/api/v3/balance", {
         headers: { "Authorization": `Bearer ${cfg.philsms.token}`, "Accept": "application/json" },
       });
       const authError = await authCheck(res);
-      if (!res.ok) return { ...base, authError };
-      const data: any = await res.json();
-      return { ...base, credits: findCredits(data) };
+      if (!res.ok) return { ...base, tokenValid: false, authError };
+      const data: any = parsedCache;
+      return { ...base, tokenValid: true, credits: findCredits(data) };
     }
     const res = await fetch(`https://sms.iprogtech.com/api/v1/account/sms_credits?api_token=${encodeURIComponent(cfg.iprog.token)}`);
     const authError = await authCheck(res);
-    if (!res.ok) return { ...base, authError };
-    const data: any = await res.json();
+    if (authError) return { ...base, tokenValid: false, authError };
+    if (!res.ok) return { ...base, tokenValid: false, authError };
+    const data: any = parsedCache;
+    // iProg invalid token: { status: 500, message: "Invalid Token" } (may be HTTP 200).
+    if (data?.status === 500 && /invalid token/i.test(String(data?.message ?? ""))) {
+      return { ...base, tokenValid: false, authError: String(data.message).slice(0, 200) };
+    }
+    if (/invalid token/i.test(String(data?.message ?? ""))) {
+      return { ...base, tokenValid: false, authError: String(data.message).slice(0, 200) };
+    }
     const credits = Number(data?.data?.load_balance ?? data?.credits);
-    return { ...base, credits: Number.isFinite(credits) ? credits : null };
+    const tokenValid = data?.status === "success" || data?.status === 200;
+    return { ...base, tokenValid, credits: Number.isFinite(credits) ? credits : null };
   } catch {
     return base;
   }

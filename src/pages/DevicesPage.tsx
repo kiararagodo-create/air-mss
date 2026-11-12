@@ -11,20 +11,9 @@ import {
 } from "lucide-react";
 import { NO_DATA_LABEL, Room, Thresholds, getStatus, volumeOf } from "../data/Data";
 import { metricSeverity, SEVERITY_TONE } from "../lib/thresholdConfig";
+import { roomLastSeen } from "../lib/deviceConnectivity";
+import { ConnectionPill, LastSeenLine } from "../components/DeviceConnection";
 import { Badge, badgeStyles } from "../ui";
-
-/** "12s ago", "4m ago", "3h ago", "2d ago" - the age of the newest reading. */
-function formatReadingAge(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  if (!Number.isFinite(ms) || ms < 0) return "unknown";
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
 
 type User = {
   id: string;
@@ -716,6 +705,12 @@ export default function DevicesPage({
                   {floorRooms.map((room) => {
                     const st = getStatus(room, thresholds);
                     const isOpen = openRoomId === room.id;
+                    // Newest signal (latest reading, or rooms.last_seen when
+                    // newer) - what the pill and the "Last seen" line use.
+                    const rowLastSeen = roomLastSeen(room);
+                    // An offline device's numbers are frozen at their last
+                    // known value: shown, but greyed out and never graded.
+                    const offline = !room.online;
                     return (
                       <div
                         key={room.id}
@@ -735,18 +730,21 @@ export default function DevicesPage({
                             />
                             <span style={{ fontWeight: 800, fontSize: 15, color: "#0f172a" }}>{room.name}</span>
                             <span className="air-room-id-pill">{room.id}</span>
+                            {/* Age of the newest signal, ticking live; offline
+                                devices also show the exact Asia/Manila time
+                                they went quiet. */}
+                            <LastSeenLine lastReadingAt={rowLastSeen} />
                             <Badge label={`CO2: ${room.co2Sensor}`} tone="success" />
                             {room.gasSensor && <Badge label={`Gas: ${room.gasSensor}`} tone="success" />}
                             {room.tempHumiditySensor && <Badge label={`T/H: ${room.tempHumiditySensor}`} tone="success" />}
-                            <Badge label={st.label} tone={st.tone} />
+                            {/* Never "OK" for a device that is not reporting. */}
+                            <Badge
+                              label={offline ? "No signal" : st.label}
+                              tone={offline ? "neutral" : st.tone}
+                            />
                             {room.sirenMuted && <Badge label="Siren Muted" tone="neutral" />}
                           </div>
-                          {!isOpen && (
-                            <Badge
-                              label={room.online ? "Online" : "Offline"}
-                              tone={room.online ? "success" : "neutral"}
-                            />
-                          )}
+                          <ConnectionPill lastReadingAt={rowLastSeen} />
                         </button>
 
                         {isOpen && (
@@ -777,8 +775,10 @@ export default function DevicesPage({
                                       // Tinted from this reading's own severity
                                       // against the saved thresholds, so the number
                                       // and the badge beside it can never disagree.
+                                      // Offline drops the number to grey: it is a
+                                      // frozen value, not a live all-clear.
                                       color:
-                                        room.co2 != null
+                                        !offline && room.co2 != null
                                           ? badgeStyles(SEVERITY_TONE[metricSeverity("co2", room.co2, thresholds)]).text
                                           : "#94a3b8",
                                     }}
@@ -793,7 +793,7 @@ export default function DevicesPage({
                                       fontSize: 17,
                                       fontWeight: 800,
                                       color:
-                                        room.lpg != null
+                                        !offline && room.lpg != null
                                           ? badgeStyles(SEVERITY_TONE[metricSeverity("lpg", room.lpg, thresholds)]).text
                                           : "#94a3b8",
                                     }}
@@ -808,7 +808,7 @@ export default function DevicesPage({
                                       fontSize: room.temp != null ? 17 : 12,
                                       fontWeight: 800,
                                       color:
-                                        room.temp != null && room.humidity != null
+                                        !offline && room.temp != null && room.humidity != null
                                           ? badgeStyles(SEVERITY_TONE[metricSeverity("temp", room.temp, thresholds)]).text
                                           : "#94a3b8",
                                     }}
@@ -823,19 +823,9 @@ export default function DevicesPage({
                               </div>
 
                               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                                <Badge
-                                  label={room.online ? "Online" : "Offline"}
-                                  tone={room.online ? "success" : "neutral"}
-                                />
-                                {/* A frozen last-known number must not read as a
-                                    current measurement, so show how old it is. */}
-                                {!room.online && (
-                                  <span style={{ fontSize: 11, color: "#94a3b8" }}>
-                                    {room.lastReadingAt
-                                      ? `last reading ${formatReadingAge(room.lastReadingAt)}`
-                                      : "no reading ever received"}
-                                  </span>
-                                )}
+                                {/* Same indicator as the header; the age of the
+                                    signal itself lives under the room name. */}
+                                <ConnectionPill lastReadingAt={rowLastSeen} />
                                 <button
                                   onClick={() => canManage && toggleSiren(room.id)}
                                   disabled={!canManage}

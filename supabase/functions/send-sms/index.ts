@@ -67,27 +67,30 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
 
   const cfg = getSmsConfig();
+  // Manual sends always hit the real provider; DRY_RUN must not affect this function.
+  cfg.dryRun = false;
   const appUrl = (Deno.env.get("APP_PUBLIC_URL") ?? "https://air.adamson.edu.ph").replace(/\/$/, "");
 
   if (body?.action === "credits") {
-    const { credits, authError } = await getSmsCredits();
-    return json({ credits, auth_error: authError, provider: cfg.provider, providerLabel: cfg.providerLabel, dry_run: cfg.dryRun });
+    const { credits, authError } = await getSmsCredits(true);
+    return json({ credits, auth_error: authError, provider: cfg.provider, providerLabel: cfg.providerLabel, dry_run: false });
   }
 
   // Admin-only connection test: hits ONLY the provider balance endpoint.
   // No SMS is sent, no sms_logs row is written.
-  if (body?.action === "test") {
+  if (body?.action === "test" || body?.action === "check") {
     if (profile.role !== "admin") {
-      return json({ ok: false, error: "Only an Administrator can test the SMS connection", results: [] }, 403);
+      return json({ tokenValid: false, creditsLeft: null, error: "Only an Administrator can test the SMS connection" }, 403);
     }
-    const { credits, authError } = await getSmsCredits();
+    if (cfg.missing.length) {
+      return json({ tokenValid: false, creditsLeft: null, error: `SMS provider ${cfg.providerLabel} missing secret(s): ${cfg.missing.join(", ")}` });
+    }
+    const { credits, tokenValid, authError } = await getSmsCredits(true);
+    console.log(`send-sms check-connection: tokenValid=${tokenValid} creditsLeft=${credits}`);
     if (authError) {
-      return json({ ok: false, connected: false, credits: null, error: authError, provider: cfg.provider, providerLabel: cfg.providerLabel });
+      return json({ tokenValid: false, creditsLeft: credits, error: authError });
     }
-    if (cfg.missing.length && !cfg.dryRun) {
-      return json({ ok: false, connected: false, credits: null, error: `SMS provider ${cfg.providerLabel} missing secret(s): ${cfg.missing.join(", ")}`, provider: cfg.provider, providerLabel: cfg.providerLabel });
-    }
-    return json({ ok: true, connected: credits !== null, credits, provider: cfg.provider, providerLabel: cfg.providerLabel, dry_run: cfg.dryRun });
+    return json({ tokenValid, creditsLeft: credits, error: null });
   }
 
   if (body?.action !== "send") return json({ error: "action must be 'credits' or 'send'" }, 400);
@@ -102,6 +105,7 @@ Deno.serve(async (req) => {
   const message: string = String(body.message ?? "").trim();
   if (recipientIds.length === 0) return json({ ok: false, error: "Select at least one recipient", results: [] }, 400);
   if (!message) return json({ ok: false, error: "Message is empty", results: [] }, 400);
+  console.log(`send-sms request: secret=IPROG_SMS_API_TOKEN dry_run=${cfg.dryRun} recipients=${recipientIds.length}`);
 
   // Recipients are re-fetched server-side; client-sent numbers are ignored.
   const { data: people } = await admin.from("profiles")
@@ -130,7 +134,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  const { credits, authError } = await getSmsCredits();
+  const { credits, authError } = await getSmsCredits(true);
   // Credentials proven wrong by the balance call: stop before burning a
   // per-recipient attempt on every recipient (and log none as "failed"
   // without the real reason).
@@ -165,22 +169,30 @@ Deno.serve(async (req) => {
 
     let finalMessage = message;
     if (notification) {
-      const token = newActionToken();
-      await admin.from("notification_recipients").upsert({
-        notification_id: notification.id, personnel_id: p.id,
-        personnel_name: p.name ?? "", personnel_role: p.role, phone,
-        action_token: token,
-        expires_at: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
-      }, { onConflict: "notification_id,personnel_id" });
-      const link = `${appUrl}/action/${token}`;
-      finalMessage = message.includes("{action_link}")
-        ? message.replaceAll("{action_link}", link)
-        : message.includes("/action/")
-        ? message
-        : `${message} Take action: ${link}`;
+      const includeLink = (Deno.env.get("SMS_INCLUDE_ACTION_LINK") ?? "").trim().toLowerCase() === "true";
+      if (includeLink) {
+        const token = newActionToken();
+        await admin.from("notification_recipients").upsert({
+          notification_id: notification.id, personnel_id: p.id,
+          personnel_name: p.name ?? "", personnel_role: p.role, phone,
+          action_token: token,
+          expires_at: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+        }, { onConflict: "notification_id,personnel_id" });
+        const link = `${appUrl}/action/${token}`;
+        finalMessage = message.includes("{action_link}")
+          ? message.replaceAll("{action_link}", link)
+          : message.includes("/action/")
+          ? message
+          : `${message} ${link}`;
+      }
     }
+    finalMessage = finalMessage.slice(0, 160);
 
-    const res = await sendSms({ to: phone, message: finalMessage });
+    const res = await sendSms({ to: phone, message: finalMessage }, true);
+    if (!res.ok) {
+      console.error(`iProg SMS failed: ${res.status} ${res.error ?? ""}`.slice(0, 300));
+    }
+    console.log(`send-sms recipient: ${maskPhone(phone)} ${res.ok ? "ok" : "failed"} ${res.error ?? ""}`.slice(0, 300));
     const rawText = typeof res.raw === "string" ? res.raw : JSON.stringify(res.raw ?? {});
     await admin.from("sms_logs").insert({
       notification_id: notification?.id ?? null, personnel_id: p.id,

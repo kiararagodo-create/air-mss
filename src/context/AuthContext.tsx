@@ -96,7 +96,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       if (session?.user) {
-        fetchProfile(session.user.id).finally(() => setLoading(false));
+        const timeoutId = setTimeout(() => setLoading(false), 8000);
+        fetchProfile(session.user.id)
+          .finally(() => {
+            clearTimeout(timeoutId);
+            setLoading(false);
+          });
       } else {
         setLoading(false);
       }
@@ -108,9 +113,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       if (session?.user) {
-        fetchProfile(session.user.id);
+        // Fetch profile with 8s timeout ensuring loading always becomes false
+        const timeoutId = setTimeout(() => setLoading(false), 8000);
+
+        fetchProfile(session.user.id)
+          .finally(() => {
+            clearTimeout(timeoutId);
+            setLoading(false);
+          });
       } else {
         setProfile(null);
+        setLoading(false);
       }
     });
 
@@ -134,7 +147,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .from("profiles")
         .select("*")
         .eq("id", data.user.id)
-        .single();
+        .maybeSingle();
 
       if (profileError) {
         console.error("Failed to load profile during login:", profileError.message);

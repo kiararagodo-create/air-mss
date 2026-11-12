@@ -361,7 +361,7 @@ export const METRIC_LABEL: Record<MetricKey, string> = {
 export const METRIC_UNIT: Record<MetricKey, string> = {
   co2: "ppm",
   lpg: "ppm",
-  temp: "°C",
+  temp: "deg C",
   humidity: "%",
 };
 

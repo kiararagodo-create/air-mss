@@ -90,9 +90,10 @@ export function evaluateSensor(
 
 /** severity -> recipients (brief §4). Warning/High/Low Leak: Maintenance.
  *  Danger/Alarm/Critical: Maintenance + Security + Administrator.
- *  Offline: Maintenance + Administrator. */
+ *  Offline: Administrator only. Online (all-clear): Maintenance + Administrator. */
 export function rolesForSeverity(severity: NotificationSeverity, level_label: string): string[] {
-  if (level_label === "Offline") return ["maintenance", "admin"];
+  if (level_label === "Offline") return ["admin"];
+  if (level_label === "Online") return ["maintenance", "admin"];
   if (severity === "warning" || severity === "high") return ["maintenance"];
   if (severity === "danger" || severity === "critical") return ["maintenance", "security", "admin"];
   return []; // info (e.g. back-online): no SMS
@@ -134,19 +135,40 @@ export async function sendIprogSms(
       body: JSON.stringify({ api_token: apiToken, phone_number: phone, message }),
     });
     const text = await res.text();
-    if (!res.ok) return { ok: false, response: `HTTP ${res.status}: ${text}`.slice(0, 500) };
+    let data: any = null;
+    try { data = JSON.parse(text); } catch { /* keep raw */ }
+    if (!res.ok || data?.status !== 200 || !data?.message_id) {
+      return { ok: false, response: `HTTP ${res.status}: ${text}`.slice(0, 500) };
+    }
     return { ok: true, response: text ? text.slice(0, 500) : "submitted" };
   } catch (e) {
     return { ok: false, response: `network error: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 
+export function isQualityReading(sensor: SensorType | "device", value: number | null, humidity: number | null = null, allZero = false): boolean {
+  if (value == null || !Number.isFinite(value)) return false;
+  // A record whose every sensor is exactly 0 is a faulty transmitter, not an
+  // alarm (e.g. AIR-D01 reporting temp 0.0 / humidity 0 / CO2 0).
+  if (allZero) return false;
+  if (sensor === "temp") {
+    if (value < -40 || value > 80) return false;
+    if (value === 0 && humidity === 0) return false;
+    return true;
+  }
+  if (sensor === "humidity") return value >= 0 && value <= 100;
+  if (sensor === "co2" || sensor === "lpg") return value >= 0 && value <= 10000;
+  return true;
+}
+
 export function buildSmsMessage(opts: {
-  severityLabel: string; roomName: string; floor: string; deviceId: string;
-  sensorLabel: string; reading: string; appUrl: string; token: string;
+  severityLabel: string; roomName: string; floor: string;
+  reading: string; time?: string;
 }): string {
   const loc = opts.floor ? `${opts.roomName} ${opts.floor}` : opts.roomName;
-  return `A.I.R. ALERT [${opts.severityLabel.toUpperCase()}] ${loc}: ${opts.sensorLabel} ${opts.reading}. Take action: ${opts.appUrl.replace(/\/$/, "")}/action/${opts.token}`;
+  const timePart = opts.time ? ` ${opts.time}` : "";
+  const msg = `A.I.R. ${opts.severityLabel.toUpperCase()} ${loc}: ${opts.reading}.${timePart}`;
+  return msg.slice(0, 160);
 }
 
 export function newActionToken(): string {

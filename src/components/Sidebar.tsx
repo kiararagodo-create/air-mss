@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
-import { Wind, LayoutDashboard, Cpu, FileBarChart2, Settings, LogOut, Users, Menu, X, KeyRound } from "lucide-react";
+import { Wind, LayoutDashboard, Cpu, FileBarChart2, Settings, LogOut, Users, Menu, X, KeyRound, BellRing } from "lucide-react";
 import type { UserRole } from "../types";
 import type { Profile } from "../context/AuthContext";
 import { getPermissions } from "../lib/permissions";
 import ChangePasswordModal from "./ChangePasswordModal";
 import NotificationBell from "./NotificationBell";
+import { useNotifications } from "../context/NotificationContext";
 
 interface SidebarProps {
   role: UserRole;
@@ -14,8 +15,9 @@ interface SidebarProps {
 }
 
 const NAV_ITEMS = [
-  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, requires: null as "reports" | "settings" | "admin" | null },
-  { to: "/devices", label: "Devices", icon: Cpu, requires: null as "reports" | "settings" | "admin" | null },
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, requires: null as "reports" | "settings" | "admin" | "notifications" | null },
+  { to: "/devices", label: "Devices", icon: Cpu, requires: null as "reports" | "settings" | "admin" | "notifications" | null },
+  { to: "/notifications", label: "Notifications", icon: BellRing, requires: "notifications" as const },
   { to: "/reports", label: "Reports", icon: FileBarChart2, requires: "reports" as const },
   { to: "/personnel", label: "Personnel", icon: Users, requires: "admin" as const },
   { to: "/settings", label: "Settings", icon: Settings, requires: "settings" as const },
@@ -24,10 +26,12 @@ const NAV_ITEMS = [
 export default function Sidebar({ role, profile, onSignOut }: SidebarProps) {
   const [open, setOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const { totalUnread, hasDangerAlert } = useNotifications();
   const permissions = getPermissions(role);
   const visibleNavItems = NAV_ITEMS.filter((item) => {
     if (item.requires === "reports") return permissions.canAccessReports;
     if (item.requires === "settings") return permissions.canAccessSettings;
+    if (item.requires === "notifications") return permissions.canAccessNotifications;
     if (item.requires === "admin") return role === "admin";
     return true;
   });
@@ -128,8 +132,13 @@ export default function Sidebar({ role, profile, onSignOut }: SidebarProps) {
                 }`
               }
             >
-              <Icon className="w-4 h-4" />
-              {label}
+              <Icon className={`w-4 h-4 ${to === "/notifications" && hasDangerAlert ? "text-red-600 animate-pulse" : ""}`} />
+              <span className="flex-1">{label}</span>
+              {to === "/notifications" && totalUnread > 0 && (
+                <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-red-600 text-white text-[11px] font-bold flex items-center justify-center">
+                  {totalUnread > 99 ? "99+" : totalUnread}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>

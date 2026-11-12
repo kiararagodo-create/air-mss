@@ -18,6 +18,12 @@
  * dropdown shows "[Name] took action: Acknowledged - Kitchen CO2".
  * Realtime on both tables + 10s polling refresh every other client.
  *
+ * SMS: one text per action, sent ONLY to people returned by
+ * getSmsRecipients() (active, approved, SMS switch on, valid number).
+ * If the same person already took the same action on the same alert in the
+ * last 60 seconds (a double-fired request), the SMS is skipped so credits
+ * are not spent twice.
+ *
  * "Resolved"/"False alarm"/"Repaired" set status=resolved. If the sensor
  * is still in a non-safe level afterwards, the dashboard/bell keep showing
  * the (live) condition — now labelled "Resolved by [name] - condition
@@ -27,6 +33,9 @@ import { createClient } from "https://esm.sh/v135/@supabase/supabase-js@2.45.4?t
 import {
   ACTION_ROLES, actionPatch, callerProfile, notifyPersonnel, resolveNotification,
 } from "../_shared/ensure_notification.ts";
+import { getSmsConfig, sendSms } from "../_shared/sms-provider.ts";
+import { buildAcknowledgedMessage, buildResolvedMessage, manilaTime } from "../_shared/sms_templates.ts";
+import { getSmsRecipients } from "../_shared/sms_recipients.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -85,8 +94,56 @@ Deno.serve(async (req) => {
     admin,
     profile.id,
     `${profile.name} ${verb[action]} ${n.room_name}`,
-    `${n.room_name} — ${String(n.sensor_type).toUpperCase()} ${n.level_label}${note ? ": " + note : ""}`,
+    `${n.room_name} - ${String(n.sensor_type).toUpperCase()} ${n.level_label}${note ? ": " + note : ""}`,
   );
+
+  // ---- SMS ----------------------------------------------------------------
+  // Duplicate guard. If a request fired twice at the same moment, both
+  // requests insert an action row. Only the request whose row has the LOWEST
+  // id sends the SMS; any later duplicate within 60 seconds skips it.
+  const since = new Date(Date.parse(taken_at) - 60_000).toISOString();
+  const { count: earlierDupes } = await admin.from("notification_actions")
+    .select("id", { count: "exact", head: true })
+    .eq("notification_id", resolved.id)
+    .eq("personnel_id", profile.id)
+    .eq("action", action)
+    .gte("taken_at", since)
+    .lt("id", actionRow.id);
+  const isDuplicate = (earlierDupes ?? 0) > 0;
+
+  if (!isDuplicate) {
+    getSmsConfig();
+    // Only people who are active, approved, have the SMS switch ON and a
+    // valid number. Anyone with the switch off is never texted.
+    const recipients = await getSmsRecipients(admin);
+    const t = manilaTime();
+    const roomLabel = n.room_name ?? n.device_id;
+    const smsText = (action === "acknowledge" || action === "on_my_way")
+      ? buildAcknowledgedMessage(profile.name, profile.role, roomLabel, t)
+      : buildResolvedMessage(profile.name, profile.role, roomLabel, note, t);
+    for (const r of recipients) {
+      const res = await sendSms({ to: r.contact_number, message: smsText });
+      const rawText = typeof res.raw === "string" ? res.raw : JSON.stringify(res.raw ?? {});
+      await admin.from("sms_logs").insert({
+        notification_id: resolved.id,
+        personnel_id: r.id,
+        recipient_name: r.name,
+        recipient_role: r.role,
+        phone: r.contact_number,
+        message: smsText,
+        status: res.ok ? "submitted" : "failed",
+        provider_response: res.error ?? rawText,
+        provider: res.provider,
+        provider_message_id: res.providerMessageId,
+        provider_status: res.status,
+      });
+    }
+  }
+
+  await admin.from("air_sms_incidents").update({
+    status: "closed", closed_at: taken_at,
+    close_reason: action, acknowledged: action === "acknowledge",
+  }).eq("device_id", n.device_id).eq("status", "open");
 
   return json({ ok: true, notification: updated, action: actionRow });
 });

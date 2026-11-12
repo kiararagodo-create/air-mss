@@ -2,9 +2,11 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { RoomsProvider, useRooms } from "./context/RoomsContext";
 import { NotificationsProvider } from "./context/NotificationContext";
+import { AlarmProvider } from "./context/AlarmContext";
 import ProtectedRoute from "./routes/ProtectedRoute";
 import RoleRoute from "./routes/RoleRoute";
 import DashboardLayout from "./layouts/DashboardLayout";
+import ErrorBoundary from "./components/ErrorBoundary";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import DashboardPage from "./pages/DashboardPage";
@@ -13,6 +15,8 @@ import ReportsPage from "./pages/admin/ReportsPage";
 import SettingsPage from "./pages/admin/SettingsPage";
 import PersonnelManagementPage from "./pages/admin/PersonnelManagementPage";
 import ResetPasswordPage from "./pages/Resetpasswordpage";
+import NotificationsPage from "./pages/NotificationsPage";
+import ActionPage from "./pages/ActionPage";
 
 // Thin wrappers so the page components keep receiving props (unchanged),
 // while the real values come from RoomsContext/AuthContext instead of the
@@ -111,33 +115,43 @@ function SettingsRoute() {
 //                    redirects to /login if not signed in)
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <NotificationsProvider>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <AuthProvider>
+          {/* RoomsProvider must be OUTER: NotificationsProvider derives its
+              live bell alerts from the live rooms + thresholds. */}
           <RoomsProvider>
-            <Routes>
-              <Route path="/login" element={<LoginPage />} />
-              <Route path="/register" element={<RegisterPage />} />
-              <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <NotificationsProvider>
+              <AlarmProvider>
+              <Routes>
+                <Route path="/login" element={<LoginPage />} />
+                <Route path="/register" element={<RegisterPage />} />
+                <Route path="/reset-password" element={<ResetPasswordPage />} />
+                {/* Public SMS action link: token identifies the personnel, no login. */}
+                <Route path="/action/:token" element={<ActionPage />} />
 
-              <Route element={<ProtectedRoute />}>
-                <Route element={<DashboardLayout />}>
-                  <Route path="/dashboard" element={<DashboardRoute />} />
-                  <Route path="/devices" element={<DevicesRoute />} />
+                <Route element={<ProtectedRoute />}>
+                  <Route element={<DashboardLayout />}>
+                    <Route path="/dashboard" element={<DashboardRoute />} />
+                    <Route path="/devices" element={<DevicesRoute />} />
+                    {/* Sensor alerts: every role, row-level scoped by RLS. */}
+                    <Route path="/notifications" element={<NotificationsPage />} />
 
-                  <Route element={<RoleRoute allow={["admin"]} />}>
-                    <Route path="/reports" element={<ReportsRoute />} />
-                    <Route path="/settings" element={<SettingsRoute />} />
-                    <Route path="/personnel" element={<PersonnelManagementPage />} />
+                    <Route element={<RoleRoute allow={["admin"]} />}>
+                      <Route path="/reports" element={<ReportsRoute />} />
+                      <Route path="/settings" element={<SettingsRoute />} />
+                      <Route path="/personnel" element={<PersonnelManagementPage />} />
+                    </Route>
                   </Route>
                 </Route>
-              </Route>
 
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
-            </Routes>
+                <Route path="*" element={<Navigate to="/dashboard" replace />} />
+              </Routes>
+              </AlarmProvider>
+            </NotificationsProvider>
           </RoomsProvider>
-        </NotificationsProvider>
-      </AuthProvider>
-    </BrowserRouter>
+        </AuthProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }

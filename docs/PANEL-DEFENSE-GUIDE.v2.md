@@ -53,11 +53,24 @@ same module the UI renders from, so a passing run is evidence that the guide
 text, the badges and the report grading agree. It covers boundary semantics,
 the "no data is not safe" invariant, and unknown-role handling.
 
-### Apply the migrations
+### Apply the database changes
 
-```bash
-supabase db push
-```
+There is no `supabase/config.toml` in this repository, so the project is not
+managed by the Supabase CLI and `supabase db push` is **not** how the database
+is deployed. The files in `supabase/migrations/` record the intended schema;
+the live project is changed by pasting `supabase/DEPLOY-ALL.sql` into the
+Supabase SQL editor and running it.
+
+This matters for the demo: migrations that have already run on the live project
+are skipped by the tooling, so editing one has no effect there. Anything that
+must change live comes from the paste script.
+
+> **The editor runs the whole batch as one transaction.** A single failed
+> statement rolls back everything before it, which is how a partial deploy looks
+> like it succeeded. Confirm the results pane reports `Success` with no rollback,
+> read the Notices tab for sections that skipped themselves, and then read the
+> `VERIFICATION` block at the end of the script - each of its SELECTs carries a
+> trailing `-- want:` comment stating the expected value.
 
 Verify in the SQL editor:
 
@@ -71,7 +84,18 @@ select relname, relrowsecurity
 from pg_class
 where relname in ('rooms','readings');
 -- both must say true
+
+-- The admin predicates must exist, or every PART 7/8 policy fails to apply
+select p.proname, pg_get_function_identity_arguments(p.oid) as args
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public'
+  and p.proname in ('is_approved_account','is_active_admin');
+-- want: 2 rows
 ```
+
+If a paste aborted before those two predicates existed, `RESUME-PART-6-8.sql` is
+the recovery block: it creates the predicates first, asserts the precondition
+afterwards rather than before, and is safe to paste more than once.
 
 ### Rotate the cron secret (do this once, before the defense)
 
@@ -301,6 +325,41 @@ reading. See bug B3.
    `manage-account-approval` build a client carrying the *caller's own* JWT,
    read `profiles` through RLS, and only escalate to the service role after.
 
+### An RLS predicate that raises fails closed, silently
+
+> **The sentence to memorise if they push on this:** "A policy expression that
+> raises is not a crash the user sees. It returns zero rows. We had policies
+> comparing a `uuid` column against `auth.uid()::text`, which has no operator in
+> PostgreSQL, so the read raised inside the policy and the table simply appeared
+> empty - no error surfaced in the UI, because the query itself succeeded."
+
+`profiles.id` is `uuid` on this project. Comparing it as
+`p.id = auth.uid()::text` raised `operator does not exist: uuid = text` (42883)
+at evaluation time. Because the expression lives inside the policy rather than
+in the query, the client received a successful empty result and had no way to
+distinguish "you have no rows" from "this policy is broken".
+
+The failure mode is fail-closed, which is the safe direction - an admin gate
+that cannot evaluate grants nothing - but it is invisible, which is what makes
+it dangerous. Three things came out of it:
+
+1. Every comparison now casts the column, not `auth.uid()`:
+   `p.id::text = auth.uid()::text`, `user_id::text = auth.uid()::text`. This form
+   is correct whether the column is `uuid` or `text`, so it does not depend on a
+   schema fact the SQL cannot see.
+2. `notifications.user_id` was declared `uuid` but was actually `text` on the
+   live project, because the original `create table if not exists` silently did
+   nothing where the table already existed. That drift is what re-armed the same
+   bug. `20260916010000` converges the column on `uuid`.
+3. `public.is_approved_account()` and `public.is_active_admin()` are the only two
+   predicates that grant anything, and every policy that depends on them now
+   compiles against a known-good definition.
+
+**Say this if asked whether RLS alone is sufficient:** no. A policy is only as
+correct as its expression, and a wrong expression produces no error. That is why
+the deploy script ends in a `VERIFICATION` block that queries the catalogue and
+prints the expected values, rather than trusting that the paste succeeded.
+
 ### Device access is INSERT-only
 
 `public.readings` grants `anon` **INSERT and nothing else**. The firmware holds
@@ -346,10 +405,10 @@ promoted through the app. The *security* half of this is now closed - a
 still half-built. *This is the most likely thing to be found in review.*
 
 **L3 - Deleting a personnel record does not delete the auth account.**
-`profiles.id` is text with no FK to `auth.users`, so the delete removes the app
-row while the login credentials and refresh tokens survive. The UI then shows
-"No account profile was found". *Action: add an admin-only Edge Function that
-calls `auth.admin.deleteUser()`.*
+`profiles.id` is `uuid` and carries no foreign key to `auth.users`, so the delete
+removes the app row while the login credentials and refresh tokens survive. The
+UI then shows "No account profile was found". *Action: add an admin-only Edge
+Function that calls `auth.admin.deleteUser()`.*
 
 **L4 - There is no alarm de-duplication.** `send-alert-email` re-sends on every
 invocation for every breaching device, with no cooldown and no escalation
@@ -372,13 +431,23 @@ down. *This is a device-side issue; the app handles it correctly by never
 substituting a value, but it cannot fix bad input.*
 
 **L8 - The SQL was not executed in a test database.** The migration changes in
-this release were verified by inspection, not by running them, because no local
-PostgreSQL was available in the development environment. Run
-`supabase db push` against a staging project first.
+this release were verified by inspection, not against a scratch database,
+because no local PostgreSQL was available in the development environment. They
+were verified against the live project instead, one paste at a time, reading
+the `VERIFICATION` results each time. *Action: stand up a staging project and
+replay `DEPLOY-ALL.sql` there before the next release.*
 
 **L9 - The main JS bundle is ~950 kB.** Vite warns about it. Code-splitting the
 PDF and chart libraries with dynamic imports would cut the initial payload; it
 has not been done.
+
+**L10 - The source repository is public, and it contains operational
+secrets.** A bootstrap-admin email address, the schema, the remediation notes
+and the deploy scripts are all readable by anyone who finds the repository, and
+committing a fix does not remove the earlier commit. This is the same class of
+problem as L1, and the honest position is that rotating the cron secret alone
+does not fix it. *Action: move to a private repository, rotate the bootstrap
+credentials, and scrub history before this is graded.*
 
 ---
 
@@ -436,6 +505,21 @@ server-side enforcement is now correct, but the product has no Approve button,
 so an administrator cannot promote a self-registered user through the UI. The
 fix is small and identified; the enforcement half - the part that matters for
 security - is done.
+
+**Q: How do you know the RLS policies actually work, rather than merely existing?**
+That was the real defect, and it is worth being precise about. A policy
+expression that raises does not surface an error to the client - it returns zero
+rows. We had policies comparing `profiles.id`, which is `uuid`, against
+`auth.uid()::text`. PostgreSQL has no `=` operator for that pair, so the read
+raised *inside the policy* and the table simply looked empty. No red console
+error, no failed request, nothing to notice.
+
+It fails closed, so it is the safe direction, but silently. The fixes are to
+cast the column instead of `auth.uid()` - which is correct for `uuid` and `text`
+alike - and to stop trusting that a successful paste means a working policy: the
+deploy script ends in a `VERIFICATION` block that queries the catalogue and
+prints the expected values for every RLS-enabled table, every report function
+grant, and both admin predicates.
 
 **Q: How did you validate it?**
 `scripts/verify-thresholds.ts` runs 33 assertions against the same module the UI
@@ -495,5 +579,8 @@ by RLS plus CHECK constraints - not just by this form."
 | Permissions | `src/lib/permissions.ts` |
 | The danger rule (source of truth) | `supabase/migrations/20260914000000_reports_simplified.sql` |
 | RLS and grants | `supabase/migrations/20260916000000_production_hardening.sql` |
+| What actually deploys to the live DB | `supabase/DEPLOY-ALL.sql` |
+| How the database is deployed | `supabase/README.md` |
+| `notifications.user_id` type correction | `supabase/migrations/20260916010000_notifications_user_id_uuid.sql` |
 | Alert email | `supabase/functions/send-alert-email/index.ts` |
 | Test suite | `scripts/verify-thresholds.ts` |

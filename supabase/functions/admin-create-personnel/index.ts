@@ -60,7 +60,7 @@ Deno.serve(async (req: Request) => {
       return json({ error: "Only approved admins can create personnel accounts" }, 403);
     }
 
-const { email, password, name, role, role_label, department, contact_number, access_scope } =
+const { email, password, name, role, role_label, department, contact_number, access_scope, sms_enabled } =
       await req.json();
 
     if (!email || !password || !name || !role) {
@@ -111,6 +111,7 @@ const { email, password, name, role, role_label, department, contact_number, acc
         department: department ?? null,
         contact_number: contact_number ?? null,
         access_scope: access_scope ?? null,
+        sms_enabled: sms_enabled === undefined ? true : !!sms_enabled,
         is_active: true,
         // An admin creating the account directly is the approval. Without this
         // the column default is 'pending' and the new person could never sign

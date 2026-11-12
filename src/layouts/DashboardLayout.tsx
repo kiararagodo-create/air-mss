@@ -1,13 +1,13 @@
-import { Outlet } from "react-router-dom";
+import { Outlet, Navigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import { useAuth } from "../context/AuthContext";
 
 // Shared shell for every authenticated page: sidebar on the left,
-// routed page content on the right via <Outlet />.
+ // routed page content on the right via <Outlet />.
 export default function DashboardLayout() {
   const { role, logout, profile } = useAuth();
 
-  if (!role) return null; // ProtectedRoute already guards this in practice
+  if (!role) return <Navigate to="/login" replace />;
 
   return (
     <div className="min-h-screen flex bg-slate-50">

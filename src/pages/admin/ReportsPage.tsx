@@ -1,26 +1,15 @@
-// src/pages/admin/ReportsPage.tsx
-//
-// Environmental Quality Reports & Logs.
-//
-// Layout, top to bottom:
-//   1. Year selector (default: current year)
-//   2. Device / Room filter
-//   3. Month calendar with data dots
-//   4. The selected day's data
-//   5. The 12 months of the selected year, each with a PDF download
-//
-// Every day and month boundary is Asia/Manila.
-
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, RefreshCw } from "lucide-react";
+import { MessageCircle } from "lucide-react";
 import ReportCalendar from "../../components/ReportCalendar";
 import DailyReportPanel from "../../components/DailyReportPanel";
 import MonthlyReportGrid from "../../components/MonthlyReportGrid";
+import { fetchCalendarMonth, fetchMonthStats, type CalendarDayRow } from "../../lib/reportQueries";
 import {
-  fetchCalendarMonth,
-  type CalendarDayRow,
-} from "../../lib/reportQueries";
-import { manilaDayString, manilaMonthStart, type ReportThresholds } from "../../lib/reports";
+  manilaDayString,
+  manilaMonthStart,
+  type ReportThresholds,
+} from "../../lib/reports";
+import { downloadMonthlyPdf } from "../../lib/monthlyPdf";
 import type { Room, Thresholds } from "../../data/Data";
 
 interface ReportsPageProps {
@@ -47,35 +36,64 @@ function toReportThresholds(th: Thresholds): ReportThresholds {
   };
 }
 
-export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
+interface ReportsPageState {
+  year: number;
+  deviceId: string;
+  monthStart: string;
+  selectedDay: string | null;
+  days: CalendarDayRow[];
+  loading: boolean;
+  error: string | null;
+  refreshKey: number;
+  // PDF report state
+  pdfLoading: boolean;
+  pdfError: string | null;
+  // Filter state for PDF download
+  pdfDateRangeStart: string; // ISO date
+  pdfDateRangeEnd: string; // ISO date
+  pdfGeneratedBy: string;
+  pdfIncludeRawDanger: boolean;
+}
+
+function defaultState(): ReportsPageState {
   const now = new Date();
   const todayManila = manilaDayString(now);
   const currentYear = Number(todayManila.slice(0, 4));
-  const currentMonth = Number(todayManila.slice(5, 7));
+  return {
+    year: currentYear,
+    deviceId: "all",
+    monthStart: manilaMonthStart(now),
+    selectedDay: null,
+    days: [],
+    loading: true,
+    error: null,
+    refreshKey: 0,
+    pdfLoading: false,
+    pdfError: null,
+    pdfDateRangeStart: "",
+    pdfDateRangeEnd: "",
+    pdfGeneratedBy: "Admin",
+    pdfIncludeRawDanger: false,
+  };
+}
 
-  const [year, setYear] = useState<number>(currentYear);
-  const [deviceId, setDeviceId] = useState<string>("all");
-  const [monthStart, setMonthStart] = useState<string>(() => manilaMonthStart(now));
-  const [selectedDay, setSelectedDay] = useState<string | null>(null);
-
-  const [days, setDays] = useState<CalendarDayRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
+export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
+  const [state, setState] = useState<ReportsPageState>(defaultState());
+  const userRole = (localStorage.getItem("userRole") as "admin" | "maintenance" | "security" | "all" || "all");
 
   const reportThresholds = useMemo(() => toReportThresholds(thresholds), [thresholds]);
 
-  // Years offered: the current year plus four back, no future years.
+  // Years offered: current year + 4 back, no future years.
   const years = useMemo(
-    () => Array.from({ length: 5 }, (_, i) => currentYear - i),
-    [currentYear]
+    () => Array.from({ length: 5 }, (_, i) => state.year - i),
+    [state.year]
   );
 
   // The device filter. readings.device_id is rooms.id, so this single control
   // covers both "device" and "room".
-  const selectedRoom = rooms.find((r) => String(r.id) === deviceId) ?? null;
+  const selectedRoom = rooms.find((r) => String(r.id) === state.deviceId) ?? null;
   const deviceLabel = selectedRoom ? selectedRoom.name : "All rooms";
-  const effectiveDeviceId = deviceId === "all" ? null : deviceId;
+  const effectiveDeviceId = state.deviceId === "all" ? null : state.deviceId;
 
   const rpcThresholds = useMemo(
     () => ({
@@ -89,145 +107,237 @@ export default function ReportsPage({ rooms, thresholds }: ReportsPageProps) {
     [reportThresholds]
   );
 
+  // --- Calendar / days loading ---
   useEffect(() => {
-    // Cancellable so that rapid month-arrow clicks, which fire overlapping
-    // report_calendar_month RPCs, cannot land out of order and leave one
-    // month's counts under another month's header.
     let cancelled = false;
     (async () => {
-      setLoading(true);
-      setError(null);
+      setState((s) => ({ ...s, loading: true, error: null }));
       try {
-        const rows = await fetchCalendarMonth(monthStart, effectiveDeviceId, rpcThresholds);
-        if (!cancelled) setDays(rows);
+        const rows = await fetchCalendarMonth(state.monthStart, effectiveDeviceId, rpcThresholds);
+        if (!cancelled) setState((s) => ({ ...s, days: rows, loading: false }));
       } catch (e) {
         if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Failed to load the calendar.");
-          setDays([]);
+          setState((s) => ({ ...s, error: e instanceof Error ? e.message : "Failed to load the calendar." }));
+          setState((s) => ({ ...s, days: [] }));
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        setState((s) => ({ ...s, loading: false }));
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [monthStart, effectiveDeviceId, rpcThresholds, refreshKey]);
+    return () => { cancelled = true; };
+  }, [state.monthStart, effectiveDeviceId, rpcThresholds, state.refreshKey]);
 
-  // Changing year moves the calendar to January of that year, and clears the
-  // selected day so a stale day from another year cannot be shown.
   function handleYearChange(next: number) {
-    setYear(next);
-    setMonthStart(`${next}-01-01`);
-    setSelectedDay(null);
-    setDays([]);
+    setState((s) => ({ ...s, year: next, monthStart: `${next}-01-01`, selectedDay: null, days: [] }));
+    setState((s) => ({ ...s, refreshKey: s.refreshKey + 1 }));
   }
 
   function handleMonthChange(next: string) {
-    setMonthStart(next);
-    setSelectedDay(null);
-    // `days` still holds the previous month's YYYY-MM-DD keys. Until the new
-    // month resolves, every cell would fail its lookup and render as "no
-    // readings recorded", which reads as data loss rather than as loading.
-    setDays([]);
+    // next is expected "YYYY-MM-01"
+    setState((s) => ({ ...s, monthStart: next, selectedDay: null }));
+    setState((s) => ({ ...s, days: [] }));
   }
 
   function handleDeviceChange(next: string) {
-    setDeviceId(next);
-    setSelectedDay(null);
-    // Same reason: never show the previous device's counts under the new name.
-    setDays([]);
+    setState((s) => ({ ...s, deviceId: next, selectedDay: null }));
+    setState((s) => ({ ...s, days: [] }));
   }
 
+  // --- Handle Download Report PDF ---
+  const handleDownloadReportPdf = async () => {
+    setState((s) => ({ ...s, pdfLoading: true, pdfError: null }));
+
+    try {
+      const [yearStr, monthStr] = state.monthStart.split("-");
+      const yearNum = Number(yearStr);
+      const monthNum = Number(monthStr);
+
+      // The monthly PDF generator (monthlyPdf.ts) takes a MonthStats
+      // aggregate from the report_month_stats RPC — same path as
+      // MonthlyReportGrid's per-month downloads — not raw readings/alerts.
+      // Passing the raw-grid shape here made data.readings undefined,
+      // which crashed the PDF with "Cannot read properties of undefined
+      // (reading 'length')".
+      const stats = await fetchMonthStats(yearNum, monthNum, effectiveDeviceId, rpcThresholds);
+      let rawDangerRows: any[] | undefined;
+      if (state.pdfIncludeRawDanger) {
+        const total = stats.danger_readings ?? 0;
+        const pages = Math.max(1, Math.ceil(total / 40));
+        const ok = window.confirm(`Including the full raw danger readings table will add about ${pages} pages. Continue?`);
+        if (!ok) {
+          setState((s) => ({ ...s, pdfLoading: false }));
+          return;
+        }
+        rawDangerRows = [];
+        let page = 0;
+        while (true) {
+          const rows = await (await import("../../lib/reportQueries")).fetchMonthDangerRows(yearNum, monthNum, effectiveDeviceId, rpcThresholds, page);
+          rawDangerRows.push(...rows);
+          if (rows.length < 250) break;
+          page++;
+        }
+      }
+      await downloadMonthlyPdf(stats, { deviceLabel, year: yearNum, month: monthNum }, { rawDangerRows, includeRawDanger: state.pdfIncludeRawDanger, rooms });
+
+      setState((s) => ({ ...s, pdfLoading: false }));
+    } catch (e) {
+      console.error("PDF generation failed:", e);
+      setState((s) => ({ ...s, pdfError: e instanceof Error ? e.message : "Unknown error", pdfLoading: false }));
+    }
+  };
+
+  // --- UI ---
   return (
     <div className="p-4 sm:p-6 max-w-5xl mx-auto">
       {/* ---- Header ------------------------------------------------------- */}
       <div className="flex items-start justify-between gap-3 mb-5">
         <h1 className="text-xl font-semibold text-slate-900">Environmental Quality Reports</h1>
-        <button
-          type="button"
-          onClick={() => setRefreshKey((k) => k + 1)}
-          aria-label="Refresh"
-          className="shrink-0 p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-50"
-        >
-          {loading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-        </button>
-      </div>
 
-      {/* ---- Filters ------------------------------------------------------ */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-        <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1">Year</label>
-          <select
-            value={year}
-            onChange={(e) => handleYearChange(Number(e.target.value))}
-            className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-          >
-            {years.map((y) => (
-              <option key={y} value={y}>
-                {y}
-              </option>
-            ))}
-          </select>
+        <div className="flex items-center gap-2">
+          {/* Device / Room filter */}
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">
+              Device / Room
+            </label>
+            <select
+              value={state.deviceId}
+              onChange={(e) => e.target && handleDeviceChange(e.target.value)}
+              className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
+            >
+              <option value="all">All rooms</option>
+              {rooms.map((r) => (
+                <option key={String(r.id)} value={String(r.id)}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Year selector */}
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Year</label>
+            <select
+              value={state.year}
+              onChange={(e) => e.target && handleYearChange(Number(e.target.value))}
+              className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
+            >
+              {years.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Calendar */}
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Month</label>
+            <select
+              value={state.monthStart.slice(5, 7)}
+              onChange={(e) => e.target && handleMonthChange(`${state.year}-${Number(e.target.value).toString().padStart(2, "0")}-01`)}
+              className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
+            >
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((m) => (
+                <option key={m} value={m}>
+                  {new Date(0, m - 1).toLocaleString("en-US", { month: "long" })} {state.year}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
-
-        <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1">
-            Device / Room
-          </label>
-          <select
-            value={deviceId}
-            onChange={(e) => handleDeviceChange(e.target.value)}
-            className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-          >
-            <option value="all">All rooms</option>
-            {rooms.map((r) => (
-              <option key={String(r.id)} value={String(r.id)}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-        </div>
       </div>
-
-      {error && (
-        <p className="text-xs text-red-600 mb-3">{error}</p>
-      )}
 
       {/* ---- Calendar ----------------------------------------------------- */}
       <div className="mb-4">
         <ReportCalendar
-          monthStart={monthStart}
+          monthStart={state.monthStart}
           onMonthChange={handleMonthChange}
-          days={days}
-          selectedDay={selectedDay}
-          onSelectDay={setSelectedDay}
-          today={todayManila}
+          days={state.days}
+          selectedDay={state.selectedDay}
+          onSelectDay={(day: string) => setState((s) => ({ ...s, selectedDay: day }))}
+          today={manilaDayString(new Date())}
         />
       </div>
 
+      {state.error && (
+        <p className="text-xs text-red-600 mb-3">{state.error}</p>
+      )}
+
       {/* ---- Selected day ------------------------------------------------- */}
-      {selectedDay && (
+      {state.selectedDay && (
         <div className="mb-6">
           <DailyReportPanel
-            key={`${selectedDay}-${deviceId}-${refreshKey}`}
-            day={selectedDay}
+            key={`${state.selectedDay}-${state.deviceId}-${state.refreshKey}`}
+            day={state.selectedDay}
             deviceId={effectiveDeviceId}
             deviceLabel={deviceLabel}
             thresholds={reportThresholds}
+            rooms={rooms}
           />
         </div>
       )}
 
       {/* ---- Monthly reports by year -------------------------------------- */}
       <MonthlyReportGrid
-        year={year}
+        year={state.year}
         deviceId={effectiveDeviceId}
         deviceLabel={deviceLabel}
         thresholds={reportThresholds}
-        currentYear={currentYear}
-        currentMonth={currentMonth}
+        currentYear={Number(state.monthStart.slice(0, 4))}
+        currentMonth={Number(state.monthStart.slice(5, 7))}
+        rooms={rooms}
       />
+
+      {/* ---- Download Report PDF section -------------------------------------- */}
+      <div className="mt-6 p-4 rounded-lg" style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+        {userRole === "admin" || userRole === "maintenance" ? (
+          <div className="flex items-center gap-3 mb-3">
+            <button
+              onClick={() => handleDownloadReportPdf()}
+              disabled={state.pdfLoading}
+              style={{
+                background: "#0d9488",
+                color: "#fff",
+                border: "none",
+                borderRadius: 8,
+                padding: "10px 16px",
+                fontSize: 13,
+                fontWeight: 700,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                cursor: "pointer",
+              }}
+            >
+              <MessageCircle size={15} /> Download Report PDF
+            </button>
+
+            {state.pdfLoading && (
+              <span style={{ color: "#64748b", fontSize: 12 }}>
+                Generating PDF...
+              </span>
+            )}
+            <label style={{ fontSize: 12, color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="checkbox"
+                checked={state.pdfIncludeRawDanger}
+                onChange={(e) => setState((s) => ({ ...s, pdfIncludeRawDanger: e.target.checked }))}
+              />
+              Include full raw danger readings table
+            </label>
+
+            {state.pdfError && (
+              <span style={{ color: "#dc2626", fontSize: 12 }}>
+                {state.pdfError}
+              </span>
+            )}
+          </div>
+        ) : (
+          <p style={{ color: "#64748b", fontSize: 12, margin: "0 0 0 44" }}>
+            PDF download available for Admin/Maintenance roles only.
+          </p>
+        )}
+      </div>
     </div>
   );
 }

@@ -78,6 +78,17 @@ export interface Room {
    *  when no reading has ever been received. Used to show the age of a number
    *  so a stale value is never mistaken for a current one. */
   lastReadingAt: string | null;
+  /**
+   * Newest signal of ANY kind for this device: `lastReadingAt`, or
+   * `rooms.last_seen` when that column carries something newer.
+   *
+   * This is what the online/offline indicator is derived from - see
+   * src/lib/deviceConnectivity.ts, which applies the same offline threshold
+   * the check-offline sweep and the offline SMS use. Optional so synthetic
+   * Room objects (e.g. one built from a notification row) still typecheck;
+   * callers fall back to `lastReadingAt`.
+   */
+  lastSeenAt?: string | null;
   alertCount: number;
   installedAt: string; // ISO date string - when this device was deployed
   // Per-device siren mute flag, polled by the ESP32 firmware (siren_muted
@@ -213,6 +224,13 @@ export function getStatus(room: Room, thresholds: Thresholds): Status {
 
 export function actionMessage(room: Room, thresholds: Thresholds): ActionMessage {
   const status = getStatus(room, thresholds);
+
+  if (!room.online) {
+    return {
+      title: "Device offline",
+      body: "No signal from this device. Check the device and its network connection.",
+    };
+  }
 
   if (!status.hasData) {
     return {

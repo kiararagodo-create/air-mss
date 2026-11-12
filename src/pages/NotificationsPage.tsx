@@ -14,6 +14,7 @@ import {
   type AirNotification, type NotificationAction, type SmsLog,
 } from "../lib/notifications";
 import AlertActionBar from "../components/AlertActionBar";
+import AlertSmsStatus from "../components/AlertSmsStatus";
 import SendSmsDialog from "../components/SendSmsDialog";
 import { getPermissions } from "../lib/permissions";
 import { sendSmsManual, type AlertRef } from "../lib/alertActions";
@@ -45,6 +46,7 @@ export default function NotificationsPage() {
   const [topTab, setTopTab] = useState<"alerts" | "actionlog">("alerts");
   const [smsRef, setSmsRef] = useState<{ ref: AlertRef; severity: string; levelLabel: string; custom: boolean } | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [smsWarning, setSmsWarning] = useState<string | null>(null);
 
   function showToast(kind: "ok" | "err", text: string) {
     setToast({ kind, text });
@@ -62,6 +64,18 @@ export default function NotificationsPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (role !== "admin") return;
+    (async () => {
+      const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+      const { count: rl } = await supabase.from("sms_logs").select("id", { count: "exact", head: true }).eq("status", "skipped_rate_limited").gte("sent_at", since);
+      const { count: lc } = await supabase.from("sms_logs").select("id", { count: "exact", head: true }).eq("status", "skipped_low_credits").gte("sent_at", since);
+      if ((rl ?? 0) > 0) setSmsWarning(`SMS safety cap reached: ${rl} message(s) skipped in the last 24h.`);
+      else if ((lc ?? 0) > 0) setSmsWarning(`Low SMS credits: ${lc} message(s) skipped in the last 24h.`);
+      else setSmsWarning(null);
+    })();
+  }, [role, rows]);
 
   // Realtime: new alerts / actions refresh the list live.
   useEffect(() => {
@@ -127,6 +141,11 @@ export default function NotificationsPage() {
       {toast && (
         <div className={`mt-3 rounded-xl px-4 py-3 text-sm font-medium ${toast.kind === "ok" ? "bg-teal-50 border border-teal-200 text-teal-800" : "bg-red-50 border border-red-200 text-red-700"}`}>
           {toast.text}
+        </div>
+      )}
+      {smsWarning && (
+        <div className="mt-3 rounded-xl px-4 py-3 text-sm font-medium bg-amber-50 border border-amber-200 text-amber-800">
+          {smsWarning}
         </div>
       )}
 
@@ -273,6 +292,7 @@ export default function NotificationsPage() {
                         <Badge label={r.status}
                           tone={r.status === "resolved" ? "success" : r.status === "acknowledged" ? "warning" : "danger"} />
                         {unhandled && <span className="ml-1.5 text-[10px] font-bold text-red-600">UNHANDLED &gt;{UNHANDLED_MIN}m</span>}
+                        <AlertSmsStatus notificationId={r.id} />
                       </td>
                       <td className="px-4 py-2.5">
                         <span className={`text-[12px] ${handled.unhandled ? "text-red-600 font-semibold" : r.handled_by_name ? "text-slate-600" : "text-slate-400"}`}>{handled.text}</span>

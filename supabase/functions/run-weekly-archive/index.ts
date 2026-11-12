@@ -655,7 +655,7 @@ async function buildPdf(args: BuildPdfArgs): Promise<Uint8Array> {
     key: string; label: string; unit: string;
     warn: number | null; danger: number | null; dangerLow: number | null;
   }> = [
-    { key: "co2", label: "CO\u2082", unit: "ppm", warn: CO2_WARN, danger: CO2_DANGER, dangerLow: null },
+    { key: "co2", label: "CO2", unit: "ppm", warn: CO2_WARN, danger: CO2_DANGER, dangerLow: null },
     { key: "lpg", label: "LPG", unit: "ppm", warn: LPG_WARN, danger: LPG_DANGER, dangerLow: null },
     { key: "temp", label: "Temperature", unit: "\u00b0C", warn: null, danger: TEMP_DANGER_HIGH, dangerLow: TEMP_DANGER_LOW },
     { key: "humidity", label: "Humidity", unit: "%", warn: null, danger: HUM_DANGER_HIGH, dangerLow: HUM_DANGER_LOW },
@@ -715,8 +715,8 @@ async function buildPdf(args: BuildPdfArgs): Promise<Uint8Array> {
     { lbl: "Date", w: 72 },
     { lbl: "First Reading", w: 110 },
     { lbl: "Last Reading", w: 110 },
-    { lbl: "CO\u2082 Avg", w: 65 },
-    { lbl: "CO\u2082 Max", w: 65 },
+    { lbl: "CO2 Avg", w: 65 },
+    { lbl: "CO2 Max", w: 65 },
     { lbl: "LPG Avg", w: 60 },
     { lbl: "Temp Avg", w: 55 },
     { lbl: "Hum Avg", w: 55 },

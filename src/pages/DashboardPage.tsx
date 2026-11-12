@@ -10,8 +10,13 @@ import {
   ShieldCheck,
   Wifi,
 } from "lucide-react";
-import DangerAlarmBanner from "../components/DangerAlarmBanner";
+
+import AlertActionBar from "../components/AlertActionBar";
+import { ConnectionPill, LastSeenLine } from "../components/DeviceConnection";
+import { useNotifications } from "../context/NotificationContext";
+import { handledByLine } from "../lib/notifications";
 import { NO_DATA_LABEL, actionMessage, type Room } from "../data/Data";
+import { roomLastSeen } from "../lib/deviceConnectivity";
 import { useThresholdConfig, type ThresholdConfig } from "../hooks/useThresholdConfig";
 import { SEVERITY_LABEL, SEVERITY_TONE, type ReferenceCard } from "../lib/thresholdConfig";
 
@@ -71,19 +76,6 @@ function Badge({ label, tone }: { label: string; tone: Tone }) {
 // Minimal local replacements for missing ./data module to avoid build errors.
 function clamp(v: number, a: number, b: number) {
   return Math.max(a, Math.min(b, v));
-}
-
-/** "12s ago", "4m ago", "3h ago", "2d ago" - the age of the newest reading. */
-function formatReadingAge(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  if (!Number.isFinite(ms) || ms < 0) return "unknown";
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
 }
 
 /**
@@ -293,6 +285,7 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
   // hook order is stable across renders.
   const cfg = useThresholdConfig();
   const thresholds = cfg.thresholds;
+  const { alerts: savedAlerts, liveAlerts } = useNotifications();
 
   // Empty state: no rooms registered yet — avoid crashing on rooms[0]/undefined.
   if (rooms.length === 0) {
@@ -327,10 +320,26 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
   const selected = rooms.find((r) => r.id === selectedId) || rooms[0];
   const status = getStatus(selected, cfg);
   const action = actionMessage(selected, cfg.thresholds);
+  // Who is handling the selected room's alert (saved row first, live next).
+  const savedForRoom = savedAlerts.find((a) => a.device_id === selected.id && a.status !== "resolved")
+    ?? savedAlerts.find((a) => a.device_id === selected.id);
+  const liveForRoom = liveAlerts.find((a) => a.device_id === selected.id);
+  const handledAlert = savedForRoom ?? liveForRoom ?? null;
+  const handledLine = handledAlert
+    ? handledByLine(handledAlert as any)
+    : status.level !== "ok" && status.hasData
+      ? { text: "No action yet", unhandled: status.level === "danger" }
+      : null;
   const co2GasStatus = getMetricStatus("co2", selected.co2, cfg);
   const lpgGasStatus = getMetricStatus("lpg", selected.lpg, cfg);
   const tempStatus = getMetricStatus("temp", selected.temp, cfg);
   const humidityStatus = getMetricStatus("humidity", selected.humidity, cfg);
+
+  // An offline device's numbers are frozen at whatever it last reported. They
+  // are still displayed - greyed out by the neutral tone - but they are never
+  // graded: an "OK" badge next to a device that has stopped reporting would
+  // call a room safe on the strength of data that is no longer arriving.
+  const selectedOffline = !selected.online;
 
   // Is the hardware for this metric actually fitted to the selected room? The
   // registry and the readings are separate facts: a room can have an LPG sensor
@@ -385,6 +394,12 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
 
   // Rooms shown in the accordion — filtered when a summary card is active.
   const listRooms = activeFilter ? filterRoomMap[activeFilter] : rooms;
+
+  // Connection counts for the card header. Derived from the same `online` flag
+  // the rows below render, so "2 online, 1 offline" can never disagree with
+  // the pills in the list.
+  const onlineCount = listRooms.filter((r) => r.online).length;
+  const offlineCount = listRooms.length - onlineCount;
 
   const handleSummaryClick = (key: SummaryFilter) => {
     setActiveFilter((prev) => (prev === key ? null : key));
@@ -542,7 +557,7 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
         Real-time CO2 & LPG telemetry across Asian College premises
       </p>
 
-      <DangerAlarmBanner isDanger={dangerRooms.length > 0} />
+
 
       {/* KPI summary cards */}
       <div className="air-summary-grid">
@@ -582,11 +597,23 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
             <Wifi size={16} color="#0d9488" />
             <span style={{ fontWeight: 800, fontSize: 15, color: "#0f172a" }}>Live Monitoring</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              flexWrap: "wrap",
+              justifyContent: "flex-end",
+            }}
+          >
             <span style={{ fontSize: 12, color: "#94a3b8" }}>
               {selected.name} &middot; {selected.floor}
             </span>
-            <Badge label={selected.online ? "ONLINE" : "OFFLINE"} tone={selected.online ? "success" : "neutral"} />
+            <LastSeenLine lastReadingAt={roomLastSeen(selected)} />
+            {/* Connection status is its own indicator, deliberately separate
+                from the air-quality badge below: a device can be online and
+                reporting a danger reading, or offline and holding a stale one. */}
+            <ConnectionPill lastReadingAt={roomLastSeen(selected)} />
           </div>
         </div>
 
@@ -596,8 +623,8 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
             value={selected.co2}
             breakpoints={co2Breakpoints}
             maxDisplay={co2MaxDisplay}
-            activeTone={co2GasStatus.tone}
-            statusLabel={co2GasStatus.hasData ? co2GasStatus.label : null}
+            activeTone={selectedOffline ? "neutral" : co2GasStatus.tone}
+            statusLabel={selectedOffline ? "No signal" : co2GasStatus.hasData ? co2GasStatus.label : null}
             emptyHint={noReading}
           />
           <GaugePanel
@@ -605,8 +632,8 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
             value={selected.lpg}
             breakpoints={lpgBreakpoints}
             maxDisplay={lpgMaxDisplay}
-            activeTone={lpgGasStatus.tone}
-            statusLabel={lpgGasStatus.hasData ? lpgGasStatus.label : null}
+            activeTone={selectedOffline ? "neutral" : lpgGasStatus.tone}
+            statusLabel={selectedOffline ? "No signal" : lpgGasStatus.hasData ? lpgGasStatus.label : null}
             emptyHint={lpgFitted ? noReading : "No LPG sensor registered for this room."}
           />
           <GaugePanel
@@ -617,8 +644,8 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
             base={tempBase}
             digits={1}
             unit="°C"
-            activeTone={tempStatus.tone}
-            statusLabel={tempStatus.hasData ? tempStatus.label : null}
+            activeTone={selectedOffline ? "neutral" : tempStatus.tone}
+            statusLabel={selectedOffline ? "No signal" : tempStatus.hasData ? tempStatus.label : null}
             emptyHint={envFitted ? noReading : "No temperature/humidity sensor registered for this room."}
           />
           <GaugePanel
@@ -628,8 +655,8 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
             maxDisplay={humidityMaxDisplay}
             base={humidityBase}
             unit="% RH"
-            activeTone={humidityStatus.tone}
-            statusLabel={humidityStatus.hasData ? humidityStatus.label : null}
+            activeTone={selectedOffline ? "neutral" : humidityStatus.tone}
+            statusLabel={selectedOffline ? "No signal" : humidityStatus.hasData ? humidityStatus.label : null}
             emptyHint={envFitted ? noReading : "No temperature/humidity sensor registered for this room."}
           />
         </div>
@@ -669,20 +696,45 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
               gap: 6,
               fontWeight: 700,
               fontSize: 13,
-              color:
-                status.tone === "success"
-                  ? "#5DCAA5"
-                  : status.tone === "warning"
-                  ? "#FAC775"
-                  : status.tone === "high"
-                  ? "#F0997B"
-                  : "#F09595",
+              color: selectedOffline
+                // No signal is a fault to check, not a passing grade: amber
+                // instead of the green an "OK" room would get, and never the
+                // green of a device that is actually reporting.
+                ? "#FAC775"
+                : status.tone === "success"
+                ? "#5DCAA5"
+                : status.tone === "warning"
+                ? "#FAC775"
+                : status.tone === "high"
+                ? "#F0997B"
+                : "#F09595",
               marginBottom: 6,
             }}
           >
-            <CheckCircle2 size={14} /> {action.title.toUpperCase()}
+            {selectedOffline ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}{" "}
+            {action.title.toUpperCase()}
           </div>
           <div style={{ fontSize: 12, color: "#cbd5e1", lineHeight: 1.5 }}>{action.body}</div>
+          {(status.level !== "ok" || handledAlert) && (
+            <div style={{ marginTop: 10, borderTop: "1px solid rgba(255,255,255,0.12)", paddingTop: 10 }}>
+              {handledLine && (
+                <p style={{ fontSize: 12, fontWeight: 600, color: handledLine.unhandled ? "#F09595" : "#5DCAA5", margin: "0 0 8px" }}>
+                  {handledLine.text}
+                  {handledAlert && (handledAlert as any).stillPresent ? " - condition still present" : ""}
+                </p>
+              )}
+              {handledAlert && (
+                <AlertActionBar
+                  dark
+                  sensorType={(handledAlert as any).sensor_type}
+                  levelLabel={(handledAlert as any).level_label}
+                  ref_={(handledAlert as any).isLive
+                    ? { live: { device_id: (handledAlert as any).device_id, room_name: (handledAlert as any).room_name, floor: (handledAlert as any).floor, sensor_type: (handledAlert as any).sensor_type, level_label: (handledAlert as any).level_label, severity: (handledAlert as any).severity, reading_value: (handledAlert as any).reading_value, reading_unit: (handledAlert as any).reading_unit, message: (handledAlert as any).message } }
+                    : { notificationId: (handledAlert as any).id }}
+                />
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -700,8 +752,14 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
             <Building2 size={16} color="#2563eb" />
             <span style={{ fontWeight: 800, fontSize: 15, color: "#0f172a" }}>Monitored Rooms</span>
           </div>
-          <span style={{ fontSize: 12.5, color: "#94a3b8" }}>
+          <span style={{ fontSize: 12.5, color: "#94a3b8", textAlign: "right" }}>
             {listRooms.length} {activeFilter ? "Shown" : "Installed"}
+            {" \u00b7 "}
+            <span style={{ color: "#047857", fontWeight: 700 }}>{onlineCount} online</span>
+            {", "}
+            <span style={{ color: offlineCount > 0 ? "#dc2626" : "#94a3b8", fontWeight: 700 }}>
+              {offlineCount} offline
+            </span>
           </span>
         </div>
 
@@ -713,6 +771,13 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
             const isOpen = openRoomId === r.id;
             const isSelected = r.id === selected.id;
             const roomAction = actionMessage(r, thresholds);
+            // Newest signal (latest reading, or rooms.last_seen when newer) -
+            // what the pill and the "Last seen" line are derived from.
+            const rowLastSeen = roomLastSeen(r);
+            // Offline rows show their frozen numbers greyed out and never get
+            // an air-quality badge: "OK" would be a claim about data that is
+            // no longer arriving.
+            const rowOffline = !r.online;
             // Per-row tones, so one row's colour cannot bleed into another.
             const rowCo2Status = getMetricStatus("co2", r.co2, cfg);
             const rowLpgStatus = getMetricStatus("lpg", r.lpg, cfg);
@@ -728,7 +793,9 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
                   type="button"
                   className="air-accordion-header"
                   onClick={() => handleToggleRoom(r)}
-                  style={{ background: isSelected ? "#f0faf7" : "#fff" }}
+                  // Wraps on a narrow screen so the metrics and the two badges
+                  // drop under the room name instead of squeezing it.
+                  style={{ background: isSelected ? "#f0faf7" : "#fff", flexWrap: "wrap" }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                     <ChevronDown
@@ -745,29 +812,58 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
                         {r.floor.toUpperCase()}
                       </div>
                       <div style={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>{r.name}</div>
+                      {/* Age of the newest signal, ticking on its own; offline
+                          devices also get the exact Asia/Manila wall-clock
+                          time they went quiet. */}
+                      <LastSeenLine lastReadingAt={rowLastSeen} />
                       <div style={{ fontSize: 11, color: "#94a3b8" }}>ID: {r.id}</div>
                     </div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
-                    <span style={{ fontSize: 12.5, color: "#334155", display: "none" }} />
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 14,
+                      flexShrink: 0,
+                      flexWrap: "wrap",
+                      justifyContent: "flex-end",
+                    }}
+                  >
                     <div style={{ textAlign: "right", fontSize: 12 }}>
                         {/* All four metrics, so the collapsed row is as
                             informative as the expanded one. A metric with no
-                            reading says so rather than being omitted. */}
-                        <div style={{ color: r.co2 != null ? "#334155" : "#94a3b8" }}>
+                            reading says so rather than being omitted. An
+                            offline device keeps its last known numbers but
+                            shows them greyed out. */}
+                        <div style={{ color: !rowOffline && r.co2 != null ? "#334155" : "#94a3b8" }}>
                           {r.co2 != null ? `${Math.round(r.co2)} CO2 ppm` : "CO2 —"}
                         </div>
-                        <div style={{ color: r.lpg != null ? "#334155" : "#94a3b8" }}>
+                        <div style={{ color: !rowOffline && r.lpg != null ? "#334155" : "#94a3b8" }}>
                           {r.lpg != null ? `${Math.round(r.lpg)} LPG ppm` : "LPG —"}
                         </div>
-                        <div style={{ color: r.temp != null ? "#334155" : "#94a3b8" }}>
+                        <div style={{ color: !rowOffline && r.temp != null ? "#334155" : "#94a3b8" }}>
                           {r.temp != null ? `${r.temp.toFixed(1)} °C` : "Temp —"}
                         </div>
-                        <div style={{ color: r.humidity != null ? "#334155" : "#94a3b8" }}>
+                        <div style={{ color: !rowOffline && r.humidity != null ? "#334155" : "#94a3b8" }}>
                           {r.humidity != null ? `${Math.round(r.humidity)} % RH` : "Humidity —"}
                         </div>
                       </div>
-                    <Badge label={st.label} tone={st.tone} />
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        flexWrap: "wrap",
+                        justifyContent: "flex-end",
+                      }}
+                    >
+                      {/* Connection status, deliberately its own pill beside the
+                          air-quality badge: one says whether the device is
+                          talking, the other says what it last reported. An
+                          offline device never shows OK - it shows "No signal". */}
+                      <ConnectionPill lastReadingAt={rowLastSeen} />
+                      <Badge label={rowOffline ? "No signal" : st.label} tone={rowOffline ? "neutral" : st.tone} />
+                    </div>
                   </div>
                 </button>
 
@@ -784,40 +880,42 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
                       {/* Tone comes from THIS row's own CO2 reading, not the selected room's.
                           Previously every open row was tinted by the selected
                           room, so a row could show a green background next to a
-                          red number. */}
-                      <div style={{ background: rowCo2Status.hasData ? (toneBg[rowCo2Status.tone] ?? "#f8fafc") : "#f1f5f9", borderRadius: 8, padding: 10 }}>
+                          red number. An offline row drops to neutral grey: its
+                          numbers are frozen, so colouring them as if they were
+                          live would be a claim the device is not making. */}
+                      <div style={{ background: !rowOffline && rowCo2Status.hasData ? (toneBg[rowCo2Status.tone] ?? "#f8fafc") : "#f1f5f9", borderRadius: 8, padding: 10 }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>CO2</div>
-                        <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
+                        <div style={{ fontSize: 16, fontWeight: 800, color: rowOffline ? "#94a3b8" : "#0f172a" }}>
                           {r.co2 != null ? `${Math.round(r.co2)} ppm` : NO_DATA_LABEL}
                         </div>
                       </div>
                       <div
                         style={{
-                          background: rowLpgStatus.hasData ? (toneBg[rowLpgStatus.tone] ?? "#f8fafc") : "#f1f5f9",
+                          background: !rowOffline && rowLpgStatus.hasData ? (toneBg[rowLpgStatus.tone] ?? "#f8fafc") : "#f1f5f9",
                           borderRadius: 8,
                           padding: 10,
                         }}
                       >
                         <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>LPG</div>
-                        <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
+                        <div style={{ fontSize: 16, fontWeight: 800, color: rowOffline ? "#94a3b8" : "#0f172a" }}>
                           {r.lpg != null ? `${Math.round(r.lpg)} ppm` : NO_DATA_LABEL}
                         </div>
                       </div>
                       <div
                         style={{
-                          background: rowTempStatus.hasData ? (toneBg[rowTempStatus.tone] ?? "#f8fafc") : "#f1f5f9",
+                          background: !rowOffline && rowTempStatus.hasData ? (toneBg[rowTempStatus.tone] ?? "#f8fafc") : "#f1f5f9",
                           borderRadius: 8,
                           padding: 10,
                         }}
                       >
                         <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>TEMPERATURE</div>
-                        <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
+                        <div style={{ fontSize: 16, fontWeight: 800, color: rowOffline ? "#94a3b8" : "#0f172a" }}>
                           {r.temp != null ? `${r.temp.toFixed(1)} °C` : NO_DATA_LABEL}
                         </div>
                       </div>
                       <div
                         style={{
-                          background: rowHumidityStatus.hasData
+                          background: !rowOffline && rowHumidityStatus.hasData
                             ? (toneBg[rowHumidityStatus.tone] ?? "#f8fafc")
                             : "#f1f5f9",
                           borderRadius: 8,
@@ -825,7 +923,7 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
                         }}
                       >
                         <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>HUMIDITY</div>
-                        <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
+                        <div style={{ fontSize: 16, fontWeight: 800, color: rowOffline ? "#94a3b8" : "#0f172a" }}>
                           {r.humidity != null ? `${Math.round(r.humidity)}%` : NO_DATA_LABEL}
                         </div>
                       </div>
@@ -839,18 +937,14 @@ export default function DashboardPage({ rooms, selectedId, setSelectedId }: Dash
                         display: "flex",
                         alignItems: "center",
                         gap: 8,
+                        flexWrap: "wrap",
                       }}
                     >
-                      <Badge label={r.online ? "ONLINE" : "OFFLINE"} tone={r.online ? "success" : "neutral"} />
+                      <ConnectionPill lastReadingAt={rowLastSeen} />
                       {/* A frozen last-known number must never read as a current
-                          measurement, so its age is always shown alongside it. */}
-                      {!r.online && (
-                        <span style={{ fontSize: 11, color: "#94a3b8" }}>
-                          {r.lastReadingAt
-                            ? `last reading ${formatReadingAge(r.lastReadingAt)}`
-                            : "no reading ever received"}
-                        </span>
-                      )}
+                          measurement, so its age - and, while offline, the exact
+                          time it went quiet - is shown alongside it. */}
+                      <LastSeenLine lastReadingAt={rowLastSeen} />
                       <span>{roomAction.body}</span>
                     </div>
                     {!isSelected && (

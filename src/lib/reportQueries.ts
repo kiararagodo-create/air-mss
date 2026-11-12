@@ -3,9 +3,10 @@
 // Typed access to the simplified Reports RPCs created by migration
 // 20260914000000_reports_simplified.sql.
 //
-// Everything is a direct aggregate from public.readings. There is no
-// daily_summaries / graph_buckets / monthly_reports table, and no edge
-// function: the browser generates PDFs itself.
+// The calendar and the monthly list read durable per-day aggregates from
+// public.daily_summaries through report_calendar_month(); they never scan
+// public.readings. The per-day table and the PDF detail sections still use
+// public.readings, which is allowed because they show individual rows.
 //
 // All day and month boundaries are Asia/Manila.
 
@@ -20,6 +21,8 @@ export const DANGER_PAGE_SIZE = 250;
 export interface CalendarDayRow {
   day: string;
   reading_count: number;
+  /** Readings skipped from statistics because a sensor value was invalid. */
+  invalid_count: number;
   danger_readings: number;
   co2_danger: number;
   lpg_danger: number;
@@ -54,6 +57,8 @@ export interface DayDetail {
   day: string;
   reading_count: number;
   danger_readings: number;
+  sensor_fault_readings?: number;
+  excluded?: Record<MetricKey, number>;
   danger_by_metric: DangerByMetric;
   metrics: Record<MetricKey, MetricStats>;
   series: SeriesPoint[];
@@ -67,6 +72,27 @@ export interface DangerRow {
   temp: number | null;
   humidity: number | null;
   triggered_by: string[];
+}
+
+export interface DangerEvent {
+  started_at: string;
+  ended_at: string;
+  duration_seconds: number;
+  reading_count: number;
+  sensors: string[];
+  peak_value: number | null;
+  peak_time: string | null;
+  peak_metric: string | null;
+}
+
+export interface RawReading {
+  created_at: string;
+  device_id: string;
+  co2: number | null;
+  lpg: number | null;
+  temp: number | null;
+  humidity: number | null;
+  status?: string;
 }
 
 export interface DailyMonthRow {
@@ -118,6 +144,8 @@ export interface MonthStats {
   danger_readings: number;
   days_with_data: number;
   days_with_danger: number;
+  sensor_fault_readings: number;
+  excluded: Record<MetricKey, number>;
   thresholds: ReportRpcThresholds;
   danger_by_metric: DangerByMetric;
   metrics: Record<MetricKey, MetricStats>;
@@ -260,6 +288,103 @@ export async function fetchMonthStats(
   return stats;
 }
 
+/** Danger events for one month (grouped consecutive danger readings). */
+export async function fetchMonthDangerEvents(
+  year: number,
+  month: number,
+  deviceId: string | null,
+  thresholds: Record<string, number>
+): Promise<DangerEvent[]> {
+  const { data, error } = await supabase.rpc("report_month_danger_events", {
+    p_year: year,
+    p_month: month,
+    p_device_id: deviceId,
+    p_thresholds: thresholds,
+  });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as DangerEvent[];
+}
+
+/** One page of danger readings for a month. */
+export async function fetchMonthDangerRows(
+  year: number,
+  month: number,
+  deviceId: string | null,
+  thresholds: Record<string, number>,
+  page: number
+): Promise<DangerRow[]> {
+  const { data, error } = await supabase.rpc("report_month_danger_rows", {
+    p_year: year,
+    p_month: month,
+    p_device_id: deviceId,
+    p_thresholds: thresholds,
+    p_limit: DANGER_PAGE_SIZE,
+    p_offset: page * DANGER_PAGE_SIZE,
+  });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as DangerRow[];
+}
+
+/** All raw readings for one Manila day, paged through Supabase. */
+export async function fetchDayReadings(
+  day: string,
+  deviceId: string | null
+): Promise<RawReading[]> {
+  const lo = new Date(`${day}T00:00:00+08:00`);
+  const hi = new Date(lo.getTime() + 24 * 60 * 60 * 1000);
+  const all: RawReading[] = [];
+  let from = 0;
+  while (true) {
+    let q = supabase
+      .from("readings")
+      .select("created_at,device_id,co2,lpg,temp,humidity,status")
+      .gte("created_at", lo.toISOString())
+      .lt("created_at", hi.toISOString())
+      .order("created_at", { ascending: true });
+    if (deviceId) q = q.eq("device_id", deviceId);
+    const { data, error } = await q.range(from, from + 999);
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as RawReading[];
+    all.push(...rows);
+    if (rows.length < 1000) break;
+    from += 1000;
+  }
+  return all;
+}
+
+/** All raw readings for one Manila month, paged through Supabase. */
+export async function fetchMonthReadings(
+  year: number,
+  month: number,
+  deviceId: string | null
+): Promise<RawReading[]> {
+  const mm = String(month).padStart(2, "0");
+  const nextMonth =
+    month === 12
+      ? `${year + 1}-01-01`
+      : `${year}-${String(month + 1).padStart(2, "0")}-01`;
+  const lo = new Date(`${year}-${mm}-01T00:00:00+08:00`);
+  const hi = new Date(`${nextMonth}T00:00:00+08:00`);
+  const all: RawReading[] = [];
+  let from = 0;
+  while (true) {
+    let q = supabase
+      .from("readings")
+      .select("created_at,device_id,co2,lpg,temp,humidity,status")
+      .gte("created_at", lo.toISOString())
+      .lt("created_at", hi.toISOString())
+      .order("created_at", { ascending: true });
+    if (deviceId) q = q.eq("device_id", deviceId);
+    const { data, error } = await q.range(from, from + 999);
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as RawReading[];
+    all.push(...rows);
+    if (rows.length < 1000) break;
+    from += 1000;
+  }
+  return all;
+}
+
 // ---------------------------------------------------------------------------
 // Formatting
 // ---------------------------------------------------------------------------
@@ -300,7 +425,7 @@ export const METRIC_LABEL_SHORT: Record<MetricKey, string> = {
 export const METRIC_UNIT_SHORT: Record<MetricKey, string> = {
   co2: "ppm",
   lpg: "ppm",
-  temp: "°C",
+  temp: "deg C",
   humidity: "%",
 };
 

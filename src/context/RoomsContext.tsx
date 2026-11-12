@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import type { Room, Thresholds } from "../data/Data";
 import { DEFAULT_THRESHOLDS } from "../data/Data";
+import { newestTimestamp, isDeviceOnline } from "../lib/deviceConnectivity";
 import { supabase } from "../lib/supabase";
 
 // Matches DevicesPage.tsx's RoomForm = Partial<Room> & { submitLabel?: string }
@@ -56,6 +57,10 @@ interface RoomRow {
   co2: number | null;
   lpg: number | null;
   alert_count: number | null;
+  /** Last time the device was seen, when the column is maintained. Null for
+   *  most deployments, in which case connectivity falls back to the newest row
+   *  in `readings`. */
+  last_seen: string | null;
   installed_at: string | null;
   siren_muted: boolean | null;
 }
@@ -86,6 +91,11 @@ function rowToRoom(row: RoomRow): Room {
     humidity: null,
     online: false,
     lastReadingAt: null,
+    // Newest signal of any kind: rooms.last_seen when that column is
+    // maintained, otherwise null until the readings fetch below fills it in.
+    // Connectivity (the Online/Offline pill, the summary counts, the offline
+    // SMS) is derived from this - see src/lib/deviceConnectivity.ts.
+    lastSeenAt: row.last_seen ?? null,
     alertCount: row.alert_count ?? 0,
     installedAt: row.installed_at ?? new Date().toISOString().slice(0, 10),
     sirenMuted: row.siren_muted ?? false,
@@ -124,30 +134,22 @@ interface ReadingRow {
   temp: number | null;
   humidity: number | null;
   severity: number | null;
+  status: string | null;
   created_at: string;
 }
 
-// How stale a reading can be before we consider that device offline.
-const OFFLINE_THRESHOLD_MS = 30_000; // 30s
-
-// Tolerance for clock skew between the browser, Supabase's clock and an ESP32
-// with no RTC. Without a lower bound on the age, a device whose clock runs
-// even slightly fast reads as permanently online forever - including one that
-// died weeks ago - because the age never goes positive.
-const MAX_FUTURE_SKEW_MS = 60_000;
-
-/**
- * True when a reading is recent enough that its device should read as online.
- *
- * `created_at` comes from the database, so it is authoritative in principle,
- * but the row travels through the device clock and the browser clock and either
- * can drift. A reading dated in the future is treated as fresh rather than
- * being rejected outright.
- */
-function nowMinusReadingMs(created_at: string): boolean {
-  const age = Date.now() - new Date(created_at).getTime();
-  return age < OFFLINE_THRESHOLD_MS && age > -MAX_FUTURE_SKEW_MS;
-}
+// How stale a signal can be before we consider that device offline.
+//
+// NOT defined here. The threshold lives in
+// supabase/functions/_shared/offline_config.ts and is imported through
+// src/lib/deviceConnectivity.ts, so the number this context flips a room to
+// OFFLINE with is the same number the check-offline sweep and the offline SMS
+// use. Normal readings arrive about once a minute per device, which is why the
+// shared default is 3 minutes and the floor is 2.
+//
+// Every staleness decision below goes through isDeviceOnline(); do not
+// re-derive `age < threshold` inline, or the dashboard and the SMS will drift
+// apart the first time the constant changes.
 
 export function RoomsProvider({ children }: { children: ReactNode }) {
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -357,10 +359,15 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const loaded = await loadThresholds();
-      setThresholds(loaded);
-      await refreshRooms();
-      setLoading(false);
+      try {
+        const loaded = await loadThresholds();
+        setThresholds(loaded);
+        await refreshRooms();
+      } catch (error) {
+        console.error("Error loading rooms/thresholds:", error instanceof Error ? error.message : String(error));
+      } finally {
+        setLoading(false);
+      }
     })();
   }, [refreshRooms]);
 
@@ -401,6 +408,10 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
                     // name) resets a healthy device to "no reading ever
                     // received".
                     lastReadingAt: existing.lastReadingAt,
+                    // Same story for the newest signal: keep whatever the
+                    // readings have already contributed, and still pick up a
+                    // rooms.last_seen that this update brought with it.
+                    lastSeenAt: newestTimestamp(existing.lastSeenAt, updated.lastSeenAt),
                   }
                 : updated;
               return exists ? prev.map((r) => (r.id === merged.id ? merged : r)) : [...prev, merged];
@@ -444,23 +455,15 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
   // recomputes automatically whenever `rooms` changes (e.g. a new device
   // was just added).
   const deviceIds = rooms.map((r) => r.deviceId).filter((id): id is string => !!id);
-const fetchLatestFor = useCallback(async (deviceId: string) => {
-    const { data, error } = await supabase
-      .from("readings")
-      .select("device_id, co2, lpg, temp, humidity, severity, created_at")
-      .eq("device_id", deviceId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle<ReadingRow>();
 
-    if (error) {
-      // Leave the previous values and lastReadingAt untouched so the UI can
-      // keep showing how old they are. Silently blanking them would be worse,
-      // and silently freezing them without a timestamp is what this fixes.
-      console.error(`Failed to fetch latest reading for ${deviceId}:`, error.message);
-      return;
-    }
-
+  /**
+   * Merge one newest-reading row (or an explicit "this device has no rows")
+   * into the matching room.
+   *
+   * Shared by the single-query path below and the per-device fallback, so both
+   * produce byte-identical state and the UI cannot tell them apart.
+   */
+  const applyLatestReading = useCallback((deviceId: string, data: ReadingRow | null) => {
     if (!data) {
       // No readings have EVER been received for this device. Every live metric
       // stays null so the UI reports "No sensor data recorded" rather than a
@@ -480,8 +483,9 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
       return;
     }
 
-    const isRecent = nowMinusReadingMs(data.created_at);
     const incomingMs = new Date(data.created_at).getTime();
+    // Same shared threshold the offline SMS uses - see deviceConnectivity.ts.
+    const online = isDeviceOnline(data.created_at);
 
     // Assign the sensor's values verbatim. A NULL in the reading row stays
     // NULL - it is not replaced by a previous value or a zero, because the
@@ -503,20 +507,93 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
           co2: data.co2 ?? null,
           temp: data.temp ?? null,
           humidity: data.humidity ?? null,
-          online: isRecent,
+          online,
           lastReadingAt: data.created_at,
+          // The newest signal of ANY kind: this reading, or a rooms.last_seen
+          // that is even newer. Connectivity is derived from this value.
+          lastSeenAt: newestTimestamp(r.lastSeenAt, data.created_at),
         };
       })
     );
   }, []);
 
+  /**
+   * Newest reading for ONE device, in one bounded `limit(1)` query served by
+   * the (device_id, created_at desc) index.
+   *
+   * Kept as the fallback for when the device_latest_reading view has not been
+   * applied yet - see fetchLatestReadings() below.
+   */
+  const fetchLatestFor = useCallback(
+    async (deviceId: string) => {
+      const { data, error } = await supabase
+        .from("readings")
+        .select("device_id, co2, lpg, temp, humidity, severity, status, created_at")
+        .eq("device_id", deviceId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle<ReadingRow>();
+
+      if (error) {
+        // Leave the previous values and lastReadingAt untouched so the UI can
+        // keep showing how old they are. Silently blanking them would be worse,
+        // and silently freezing them without a timestamp is what this fixes.
+        console.error(`Failed to fetch latest reading for ${deviceId}:`, error.message);
+        return;
+      }
+      applyLatestReading(deviceId, data);
+    },
+    [applyLatestReading]
+  );
+
+  // Set once the device_latest_reading view is proven missing, so a pending
+  // migration does not produce an error log every 2 seconds.
+  const latestViewMissing = useRef(false);
+
+  /**
+   * Newest reading for EVERY registered device in ONE query.
+   *
+   * The view resolves `distinct on (device_id)` against the
+   * (device_id, created_at desc) index, so this is a fixed number of index
+   * lookups rather than a table scan and rather than the N round trips the
+   * per-device path costs. If the migration has not been applied yet we log
+   * once and fall back, so the dashboard keeps working before and after it.
+   */
+  const fetchLatestReadings = useCallback(
+    async (ids: string[]) => {
+      if (ids.length === 0) return;
+
+      if (!latestViewMissing.current) {
+        const { data, error } = await supabase
+          .from("device_latest_reading")
+          .select("*")
+          .in("device_id", ids);
+
+        if (error) {
+          latestViewMissing.current = true;
+          console.warn(
+            "device_latest_reading is unavailable - falling back to per-device queries. " +
+              "Apply supabase/migrations/20261001000000_device_latest_reading_view.sql to enable it:",
+            error.message
+          );
+        } else {
+          const rows = (data ?? []) as ReadingRow[];
+          const covered = new Set(rows.map((row) => row.device_id));
+          for (const row of rows) applyLatestReading(row.device_id, row);
+          // Devices the view returned nothing for have never reported.
+          for (const id of ids) if (!covered.has(id)) applyLatestReading(id, null);
+          return;
+        }
+      }
+
+      for (const id of ids) await fetchLatestFor(id);
+    },
+    [applyLatestReading, fetchLatestFor]
+  );
+
   useEffect(() => {
     if (deviceIds.length === 0) return;
-    (async () => {
-      for (const deviceId of deviceIds) {
-        await fetchLatestFor(deviceId);
-      }
-    })();
+    fetchLatestReadings(deviceIds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceIds.join(",")]);
 
@@ -538,8 +615,12 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
                     co2: row.co2 ?? null,
                     temp: row.temp ?? null,
                     humidity: row.humidity ?? null,
-                    online: true,
+                    // A fresh row means the device is back - evaluated against
+                    // the same shared threshold as the offline SMS, so the pill
+                    // and the alert can never disagree.
+                    online: isDeviceOnline(row.created_at),
                     lastReadingAt: row.created_at,
+                    lastSeenAt: newestTimestamp(r.lastSeenAt, row.created_at),
                   }
                 : r
             )
@@ -551,6 +632,21 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
     return () => {
       supabase.removeChannel(channel);
     };
+  }, []);
+
+  // Re-evaluate staleness every 30s so devices flip to OFFLINE without a refresh.
+  // isDeviceOnline() applies the shared offline threshold - the same value the
+  // check-offline sweep and the offline SMS use - to the newest signal.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setRooms((prev) =>
+        prev.map((r) => {
+          const online = isDeviceOnline(r.lastSeenAt ?? r.lastReadingAt);
+          return online === r.online ? r : { ...r, online };
+        })
+      );
+    }, 30000);
+    return () => window.clearInterval(id);
   }, []);
 
   // Polling fallback: catches missed realtime events and flips stale
@@ -567,9 +663,8 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
       if (sweepInFlight) return;
       sweepInFlight = true;
       try {
-        for (const deviceId of deviceIds) {
-          await fetchLatestFor(deviceId);
-        }
+        // One query for every device, not one per device.
+        await fetchLatestReadings(deviceIds);
       } finally {
         sweepInFlight = false;
       }
@@ -585,7 +680,7 @@ const fetchLatestFor = useCallback(async (deviceId: string) => {
   useEffect(() => {
     const handleVisibility = () => {
       if (document.visibilityState === "visible" && deviceIds.length > 0) {
-        deviceIds.forEach((id) => fetchLatestFor(id));
+        fetchLatestReadings(deviceIds);
       }
     };
     document.addEventListener("visibilitychange", handleVisibility);

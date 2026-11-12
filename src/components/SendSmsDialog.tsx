@@ -14,7 +14,7 @@ import { useAuth } from "../context/AuthContext";
 import { getPermissions } from "../lib/permissions";
 import {
   fetchPersonnel, fetchSmsCredits, maskPhone, prefillAlertMessage, preselectRoleIds,
-  readableProviderError, sendSmsManual, smsSegments, type AlertRef, type PersonnelRow, type SmsSendResult,
+  readableProviderError, sendSmsManual, smsSegments, testSmsConnection, type AlertRef, type PersonnelRow, type SmsSendResult,
 } from "../lib/alertActions";
 
 interface Props {
@@ -47,6 +47,8 @@ export default function SendSmsDialog({ open, onClose, ref_, severity, levelLabe
   const [sendAnyway, setSendAnyway] = useState(false);
   const [sending, setSending] = useState(false);
   const [results, setResults] = useState<SmsSendResult[]>([]);
+  const [connChecking, setConnChecking] = useState(false);
+  const [connResult, setConnResult] = useState<{ tokenValid: boolean; creditsLeft: number | null; error: string | null } | null>(null);
 
   const canSend = perms.canSendSms;
 
@@ -200,6 +202,35 @@ export default function SendSmsDialog({ open, onClose, ref_, severity, levelLabe
                 )}
                 {creditsOut && <span className="block text-red-600 font-bold mt-0.5">Sending is blocked: iProg credits are 0. Top up your iProg account, then try again.</span>}
               </div>
+
+              {role === "admin" && (
+                <div className="bg-slate-50 border border-slate-100 rounded-xl px-3.5 py-3 text-[12px] text-slate-600 flex items-center justify-between gap-3 flex-wrap">
+                  <span>
+                    Connection check:
+                    {connResult === null
+                      ? " not run"
+                      : connResult.error
+                      ? ` Failed — ${connResult.error}`
+                      : connResult.tokenValid
+                      ? ` OK — ${connResult.creditsLeft ?? "?"} credits left`
+                      : " Failed"}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={connChecking}
+                    onClick={async () => {
+                      setConnChecking(true);
+                      const r = await testSmsConnection();
+                      setConnResult(r);
+                      setConnChecking(false);
+                      if (r.creditsLeft !== null) setCreditInfo((prev) => ({ ...prev, credits: r.creditsLeft }));
+                    }}
+                    className="text-[12px] font-semibold text-teal-700 border border-teal-200 rounded-lg px-3 py-1.5 hover:bg-teal-50 disabled:opacity-50"
+                  >
+                    {connChecking ? "Checking…" : "Check SMS connection"}
+                  </button>
+                </div>
+              )}
 
               {authError && (
                 <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-[12px] text-red-700">

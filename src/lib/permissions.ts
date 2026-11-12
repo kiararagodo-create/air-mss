@@ -11,6 +11,12 @@ export interface RolePermissions {
   canAccessReports: boolean;
   /** Settings page in the sidebar */
   canAccessSettings: boolean;
+  /** Notifications page in the sidebar (all roles address-scoped by RLS) */
+  canAccessNotifications: boolean;
+  /** Take alert actions (Acknowledge / On my way / Resolved / False alarm / Repaired) */
+  canTakeAlertAction: boolean;
+  /** Manual "Send SMS alert" (Administrator + Security only) */
+  canSendSms: boolean;
 }
 
 // Admin: full control. Maintenance: can toggle devices but not add/remove,
@@ -24,6 +30,9 @@ export const PERMISSIONS: Record<UserRole, RolePermissions> = {
     canToggleDevice: true,
     canAccessReports: true,
     canAccessSettings: true,
+    canAccessNotifications: true,
+    canTakeAlertAction: true,
+    canSendSms: true,
   },
   maintenance: {
     canAddDevice: false,
@@ -31,6 +40,9 @@ export const PERMISSIONS: Record<UserRole, RolePermissions> = {
     canToggleDevice: true,
     canAccessReports: false,
     canAccessSettings: false,
+    canAccessNotifications: true,
+    canTakeAlertAction: true,
+    canSendSms: false,
   },
   security: {
     canAddDevice: false,
@@ -38,6 +50,9 @@ export const PERMISSIONS: Record<UserRole, RolePermissions> = {
     canToggleDevice: false,
     canAccessReports: false,
     canAccessSettings: false,
+    canAccessNotifications: true,
+    canTakeAlertAction: true,
+    canSendSms: true,
   },
 };
 
@@ -57,6 +72,9 @@ const UNKNOWN_ROLE_PERMISSIONS: RolePermissions = {
   canToggleDevice: false,
   canAccessReports: false,
   canAccessSettings: false,
+  canAccessNotifications: false,
+  canTakeAlertAction: false,
+  canSendSms: false,
 };
 
 export function getPermissions(role: UserRole): RolePermissions {

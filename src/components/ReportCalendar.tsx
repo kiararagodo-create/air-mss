@@ -100,9 +100,11 @@ export default function ReportCalendar({
             return <div key={day} aria-hidden className="h-11 rounded-lg" />;
           }
 
-const row = byDay.get(day);
+        const row = byDay.get(day);
         const hasData = !!row && row.reading_count > 0;
+        const totalCount = hasData ? Number(row!.reading_count) : 0;
         const breaches = hasData ? Number(row!.danger_readings) : 0;
+        const invalidCount = hasData ? Number(row!.invalid_count ?? 0) : 0;
         const future = day > today;
         const selected = day === selectedDay;
 
@@ -135,7 +137,10 @@ const row = byDay.get(day);
                 ? `${fmtDayLong(day)} - ${row!.reading_count.toLocaleString("en-US")} readings` +
                   (breaches > 0
                     ? `, ${breaches.toLocaleString("en-US")} above limit (${causedBy.join(", ")})`
-                    : ", none above limit")
+                    : ", none above limit") +
+                  (invalidCount > 0
+                    ? `, ${invalidCount.toLocaleString("en-US")} sensor fault skipped`
+                    : "")
                 : `${fmtDayLong(day)} - no readings recorded`
             }
             className={[
@@ -151,24 +156,19 @@ const row = byDay.get(day);
             ].join(" ")}
           >
             <span>{Number(day.slice(8, 10))}</span>
-            {breaches > 0 ? (
+            {hasData && (
               <span
                 className={[
                   "text-[9px] font-bold leading-none tabular-nums px-1 rounded",
-                  selected ? "bg-white/25 text-white" : "bg-slate-300 text-slate-700",
+                  selected
+                    ? "bg-white/25 text-white"
+                    : breaches > 0
+                    ? "bg-red-200 text-red-700"
+                    : "bg-slate-200 text-slate-600",
                 ].join(" ")}
               >
-                {breaches > 999 ? "999+" : breaches}
+                {totalCount > 999 ? "999+" : totalCount}
               </span>
-            ) : (
-              hasData && (
-                // Muted, uncoloured: marks that data exists without implying
-                // the day was safe. No data means no dot at all.
-                <span
-                  aria-hidden
-                  className={`w-1 h-1 rounded-full ${selected ? "bg-white/60" : "bg-slate-300"}`}
-                />
-              )
             )}
           </button>
         );
@@ -235,6 +235,9 @@ function Legend() {
       <span style={item}>
         <span style={{ ...key, background: "#e2e8f0", color: "#475569" }}>12</span>
         12 readings above limit (hover for the sensors)
+      </span>
+      <span style={item}>
+        Sensor faults are counted in the day total but never in an above-limit badge.
       </span>
     </div>
   );

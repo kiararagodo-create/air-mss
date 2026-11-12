@@ -19,6 +19,7 @@
  */
 
 import { createClient } from "https://esm.sh/v135/@supabase/supabase-js@2.45.4?target=deno&standalone";
+import { buildDangerMessage, sensorName, manilaTime } from "../_shared/sms_templates.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -225,7 +226,8 @@ async function loadRecipients(
     ...adminRecipients.map((p) => ({ phone_number: p, role: "admin" })),
     ...maintenanceRecipients.map((p) => ({ phone_number: p, role: "maintenance" })),
     ...securityRecipients.map((p) => ({ phone_number: p, role: "security" })),
-]);
+  ];
+}
 
 /** Normalize a phone number to iProG's expected "09XXXXXXXXX" format.
  *  Accepts: 09…, 9…, +639…, 639…  Rejects invalid numbers. */
@@ -267,27 +269,31 @@ async function sendIprogSms(phoneNumber: string, message: string): Promise<{
     });
     clearTimeout(timeoutId);
     const text = await res.text();
+    let data: any = null;
+    try { data = JSON.parse(text); } catch { /* keep raw */ }
 
     if (!res.ok) {
-      const errMsg = text.slice(0, 300);
-      // Map iProg HTTP status to readable messages
-      if (res.status === 401 || res.status === 403) {
-        return { ok: false, response: "", error: "Invalid or rejected iProg token" };
-      }
-      if (res.status === 400) {
-        return { ok: false, response: "", error: "Invalid phone number" };
-      }
-      if (res.status === 429 || res.status === 500) {
-        return { ok: false, response: "", error: "Insufficient iProg credits" };
-      }
-      return { ok: false, response: errMsg, error: `iProg error ${res.status}` };
+      const msg = String(data?.message ?? data?.error ?? `iProg error ${res.status}`).slice(0, 300);
+      console.error(`iProg SMS failed: HTTP ${res.status} ${msg}`);
+      return { ok: false, response: text.slice(0, 300), error: msg };
+    }
+    if (data?.status !== 200) {
+      const msg = String(data?.message ?? data?.error ?? "Unknown iProg error").slice(0, 300);
+      console.error(`iProg SMS failed: status ${data?.status ?? res.status} ${msg}`);
+      return { ok: false, response: text.slice(0, 300), error: msg };
+    }
+    if (data?.message_id == null) {
+      console.error(`iProg SMS failed: status ${data?.status ?? res.status} missing message_id`);
+      return { ok: false, response: text.slice(0, 300), error: String(data?.message ?? "iProg response missing message_id").slice(0, 300) };
     }
     return { ok: true, response: text.slice(0, 300), error: null };
   } catch (e: any) {
     clearTimeout(timeoutId);
     if (e.name === "AbortError") {
+      console.error("iProg SMS failed: timeout");
       return { ok: false, response: "", error: "iProg unreachable (timeout)" };
     }
+    console.error(`iProg SMS failed: ${e.message}`);
     return { ok: false, response: "", error: `Network error: ${e.message}` };
   }
 }
@@ -318,6 +324,7 @@ Deno.serve(async (req) => {
   if (!iprogToken) {
     return json({ error: "iProg SMS is not configured" }, 500);
   }
+  const dryRun = (Deno.env.get("DRY_RUN") ?? "").trim().toLowerCase() === "true";
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -458,21 +465,36 @@ Deno.serve(async (req) => {
     timeZone: "Asia/Manila",
   });
 
-  // Message body kept short (<100 chars) because iProg adds header and footer automatically.
-  // Format: "Room 106 (AIR-D02): LPG CRITICAL 4200 ppm. 11/10 3:45 PM"
-  // iProg prepends "A.I.R - Asian College Air Quality Monitoring System" and
-  // appends "Automated alert from A.I.R Monitoring System. Please check...".
-  // We keep the body to ~70 chars so the total stays under ~160.
-  const msgBase = `${roomRow.name} (${device_id}): ${triggered[0]?.sensor.toUpperCase()} ${triggered[0]?.level.toUpperCase()} ${triggered[0]?.level === "Elevated Gas" ? (lpg ?? co2 ?? temp ?? humidity ?? "??").toString() : (lpg ?? co2 ?? temp ?? humidity ?? "??").toString()} ppm. ${dayStr} ${timeStr}`;
-
-  // Cap the body so even with iProg header+footer the total stays reasonable.
-  const maxBodyChars = 70;
-  const message = msgBase.length > maxBodyChars
-    ? msgBase.slice(0, maxBodyChars) : msgBase;
+  const sensors = triggered.map((t) => {
+    const key = t.sensor.toLowerCase();
+    const val = key === "lpg" ? lpg : key === "co2" ? co2 : key === "temp" ? temp : humidity;
+    return { name: sensorName(key), value: `${val ?? ""}`.trim() };
+  });
+  const message = buildDangerMessage(roomRow.name ?? device_id, sensors, manilaTime());
 
   // ---- Send SMS to each recipient, handling failures individually ----
   const smsPromises = allRecipients.map(async (recipient) => {
     const { phone_number, role } = recipient;
+
+    if (dryRun) {
+      console.log("DRY_RUN active, SMS skipped");
+      await admin.from("alert_log").insert({
+        device_id,
+        room_id: roomRow.id as string,
+        room_name: roomRow.name,
+        sensor: triggered[0]?.sensor ?? "",
+        level: triggered[0]?.level ?? "",
+        sms_status: "skipped_dry_run",
+        sms_response: "DRY_RUN active, SMS skipped",
+      });
+      return {
+        name: (recipient as any).name ?? "Unknown",
+        role,
+        phone_masked: maskPhone(phone_number),
+        ok: true,
+        error: null,
+      };
+    }
 
     // Determine which sensor/level(s) this recipient should get based on role
     const shouldSend = determineIfRecipientGetsLevel(

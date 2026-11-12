@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { UserPlus, Shield, Wrench, Crown, Ban, RotateCcw, Loader2, X, Pencil, Trash2 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
+import { useAuth } from "../../context/AuthContext";
 
 interface Personnel {
   id: string;
@@ -12,6 +13,7 @@ interface Personnel {
   contact_number: string | null;
   access_scope: string | null;
   is_active: boolean;
+  sms_enabled: boolean;
   created_at: string;
 }
 
@@ -34,6 +36,8 @@ function RoleIcon({ role }: { role: string }) {
 }
 
 export default function PersonnelManagementPage() {
+  const { role: currentRole } = useAuth();
+  const isAdmin = currentRole === "admin";
   const [personnel, setPersonnel] = useState<Personnel[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -41,6 +45,19 @@ export default function PersonnelManagementPage() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [togglingSmsId, setTogglingSmsId] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  function showToast(kind: "ok" | "err", text: string) {
+    setToast({ kind, text });
+    window.setTimeout(() => setToast(null), 4000);
+  }
+
+  function isValidPhone(raw: string | null | undefined) {
+    if (!raw) return false;
+    const d = String(raw).replace(/[\s\-+]/g, "");
+    return (d.startsWith("09") && d.length === 11) || (d.startsWith("639") && d.length === 12);
+  }
 
   const [form, setForm] = useState({
     name: "",
@@ -49,6 +66,7 @@ export default function PersonnelManagementPage() {
     role: "security",
     department: "",
     contact_number: "",
+    sms_enabled: true,
   });
 
   // --- Edit state ---
@@ -59,6 +77,7 @@ export default function PersonnelManagementPage() {
     role: "security",
     department: "",
     contact_number: "",
+    sms_enabled: true,
   });
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
@@ -141,6 +160,7 @@ export default function PersonnelManagementPage() {
         role_label: roleLabel,
         department: form.department || null,
         contact_number: form.contact_number || null,
+        sms_enabled: form.sms_enabled,
       },
     });
 
@@ -151,7 +171,7 @@ export default function PersonnelManagementPage() {
       return;
     }
 
-    setForm({ name: "", email: "", password: "", role: "security", department: "", contact_number: "" });
+    setForm({ name: "", email: "", password: "", role: "security", department: "", contact_number: "", sms_enabled: true });
     setShowAddForm(false);
     loadPersonnel();
   }
@@ -176,6 +196,25 @@ export default function PersonnelManagementPage() {
     );
   }
 
+  async function toggleSms(person: Personnel) {
+    if (!isAdmin) return;
+    if (!person.contact_number) return;
+    setTogglingSmsId(person.id);
+    const newVal = !person.sms_enabled;
+    const { error } = await (supabase.from("profiles") as any)
+      .update({ sms_enabled: newVal })
+      .eq("id", person.id);
+    setTogglingSmsId(null);
+    if (error) {
+      showToast("err", error.message ?? "Failed to update SMS alerts.");
+      return;
+    }
+    setPersonnel((prev) =>
+      prev.map((p) => (p.id === person.id ? { ...p, sms_enabled: newVal } : p))
+    );
+    showToast("ok", newVal ? "SMS alerts enabled." : "SMS alerts disabled.");
+  }
+
   // --- Edit handlers ---
   function openEditForm(person: Personnel) {
     setEditingPerson(person);
@@ -186,6 +225,7 @@ export default function PersonnelManagementPage() {
       role: person.role,
       department: person.department ?? "",
       contact_number: person.contact_number ?? "",
+      sms_enabled: person.sms_enabled ?? true,
     });
   }
 
@@ -223,6 +263,7 @@ export default function PersonnelManagementPage() {
       role_label: roleLabel,
       department: editForm.department || null,
       contact_number: editForm.contact_number || null,
+      sms_enabled: editForm.sms_enabled,
     };
 
     const { error } = await (supabase.from("profiles") as any)
@@ -292,6 +333,12 @@ export default function PersonnelManagementPage() {
         </button>
       </div>
 
+      {toast && (
+        <div className={`mb-4 px-3.5 py-2.5 rounded-lg border text-sm ${toast.kind === "ok" ? "bg-teal-50 border-teal-200 text-teal-700" : "bg-red-50 border-red-200 text-red-700"}`}>
+          {toast.text}
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center py-16 text-slate-400">
           <Loader2 className="w-5 h-5 animate-spin mr-2" />
@@ -338,9 +385,31 @@ export default function PersonnelManagementPage() {
                     <span className="text-slate-400">Department</span>
                     <p className="text-slate-600">{person.department ?? "—"}</p>
                   </div>
-                  <div>
+                   <div>
                     <span className="text-slate-400">Contact No.</span>
                     <p className="text-slate-600">{person.contact_number ?? "—"}</p>
+                    {person.contact_number && !isValidPhone(person.contact_number) && (
+                      <p className="text-xs text-red-600 font-medium">Invalid number</p>
+                    )}
+                  </div>
+                  <div>
+                    <span className="text-slate-400">SMS Alerts</span>
+                    <div className="flex items-center gap-2 mt-1">
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={person.sms_enabled}
+                        disabled={!isAdmin || !person.contact_number || togglingSmsId === person.id}
+                        title={!person.contact_number ? "Add a contact number first" : undefined}
+                        onClick={() => toggleSms(person)}
+                        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${person.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}
+                      >
+                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${person.sms_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
+                      </button>
+                      {!person.contact_number && (
+                        <span className="text-xs text-slate-400">No number</span>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -407,6 +476,7 @@ export default function PersonnelManagementPage() {
                   <th className="px-4 py-3">Role</th>
                   <th className="px-4 py-3">Department</th>
                   <th className="px-4 py-3">Contact No.</th>
+                  <th className="px-4 py-3">SMS Alerts</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3 text-right w-32">Actions</th>
                 </tr>
@@ -423,7 +493,32 @@ export default function PersonnelManagementPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-slate-500">{person.department ?? "—"}</td>
-                    <td className="px-4 py-3 text-slate-500">{person.contact_number ?? "—"}</td>
+                    <td className="px-4 py-3 text-slate-500">
+                      <div className="flex flex-col">
+                        <span>{person.contact_number ?? "—"}</span>
+                        {person.contact_number && !isValidPhone(person.contact_number) && (
+                          <span className="text-xs text-red-600 font-medium">Invalid number</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={person.sms_enabled}
+                          disabled={!isAdmin || !person.contact_number || togglingSmsId === person.id}
+                          title={!person.contact_number ? "Add a contact number first" : undefined}
+                          onClick={() => toggleSms(person)}
+                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${person.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}
+                        >
+                          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${person.sms_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
+                        </button>
+                        {!person.contact_number && (
+                          <span className="text-xs text-slate-400">No number</span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3">
                       <span
                         className={`text-xs font-medium px-2 py-1 rounded-md ${
@@ -553,6 +648,18 @@ export default function PersonnelManagementPage() {
                   className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
                 />
               </div>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-slate-500">SMS Alerts</label>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={form.sms_enabled}
+                  onClick={() => setForm({ ...form, sms_enabled: !form.sms_enabled })}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${form.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${form.sms_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
+                </button>
+              </div>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">Role</label>
                 <select
@@ -648,6 +755,18 @@ export default function PersonnelManagementPage() {
                   placeholder="e.g. 09171234567"
                   className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
                 />
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-slate-500">SMS Alerts</label>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={editForm.sms_enabled}
+                  onClick={() => setEditForm({ ...editForm, sms_enabled: !editForm.sms_enabled })}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${editForm.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${editForm.sms_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
+                </button>
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">Role</label>

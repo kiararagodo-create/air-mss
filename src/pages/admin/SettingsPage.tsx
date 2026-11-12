@@ -12,6 +12,7 @@ import {
   type ValidationErrors,
 } from "../../lib/thresholdConfig";
 import { useThresholdConfig } from "../../hooks/useThresholdConfig";
+import { supabase } from "../../lib/supabase";
 
 type Settings = {};
 
@@ -37,6 +38,8 @@ export default function SettingsPage({ setSettings, thresholds, setThresholds, u
 
   const [localThresholds, setLocalThresholds] = useState<Thresholds>(thresholds);
   const [dirty, setDirty] = useState(false);
+  const [smsSettings, setSmsSettings] = useState<any>(null);
+  const [smsUsage, setSmsUsage] = useState({ today: 0, month: 0 });
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -47,6 +50,20 @@ export default function SettingsPage({ setSettings, thresholds, setThresholds, u
   useEffect(() => {
     if (!dirty) setLocalThresholds(thresholds);
   }, [thresholds, dirty]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    (async () => {
+      const { data } = await supabase.from("sms_alert_settings").select("*").eq("id", 1).maybeSingle();
+      setSmsSettings(data ?? null);
+      const now = new Date();
+      const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+      const startMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+      const { count: today } = await supabase.from("sms_logs").select("id", { count: "exact", head: true }).gte("sent_at", startToday).eq("status", "submitted");
+      const { count: month } = await supabase.from("sms_logs").select("id", { count: "exact", head: true }).gte("sent_at", startMonth).eq("status", "submitted");
+      setSmsUsage({ today: today ?? 0, month: month ?? 0 });
+    })();
+  }, [isAdmin]);
 
   // The overview previews what is being edited, so it shows the candidate
   // configuration while there are unsaved changes and the saved one otherwise.
@@ -246,6 +263,48 @@ export default function SettingsPage({ setSettings, thresholds, setThresholds, u
             onChange={(key, value) => update("humidity", key, value)}
             note="Two-sided band within the DHT22's own 0-100 % RH measurement range."
           />
+
+          {isAdmin && (
+            <div style={{ background: "#f8fafc", borderRadius: 10, padding: 14, marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <Shield size={15} color="#0d9488" />
+                <span style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>SMS credits and usage</span>
+              </div>
+              <div style={{ fontSize: 12.5, marginBottom: 8 }}>
+                Sent today: <b>{smsUsage.today}</b> · This month: <b>{smsUsage.month}</b> · Estimated credits: <b>{smsUsage.month}</b>
+              </div>
+              {smsSettings && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                  {[
+                    ["reminder_minutes", "Reminder (min)"],
+                    ["close_after_minutes", "Close after (min)"],
+                    ["max_sms_per_hour", "Max SMS/hour"],
+                    ["max_sms_per_day", "Max SMS/day"],
+                    ["low_credit_threshold", "Low credit threshold"],
+                  ].map(([key, label]) => (
+                    <label key={key} style={{ fontSize: 11, fontWeight: 700, color: "#64748b" }}>
+                      {label}
+                      <input type="number" style={{ width: "100%", marginTop: 4, padding: "6px 8px", borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
+                        value={smsSettings[key] ?? 0}
+                        onChange={(e) => setSmsSettings({ ...smsSettings, [key]: Number(e.target.value) })} />
+                    </label>
+                  ))}
+                </div>
+              )}
+              <button onClick={async () => {
+                if (!smsSettings) return;
+                await supabase.from("sms_alert_settings").update({
+                  reminder_minutes: smsSettings.reminder_minutes,
+                  close_after_minutes: smsSettings.close_after_minutes,
+                  max_sms_per_hour: smsSettings.max_sms_per_hour,
+                  max_sms_per_day: smsSettings.max_sms_per_day,
+                  low_credit_threshold: smsSettings.low_credit_threshold,
+                }).eq("id", 1);
+              }} style={{ marginTop: 10, background: "#0d9488", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                Save SMS settings
+              </button>
+            </div>
+          )}
 
           {errorCount > 0 && (
             <div

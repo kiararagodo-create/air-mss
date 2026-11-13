@@ -465,14 +465,6 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
    */
   const applyLatestReading = useCallback((deviceId: string, data: ReadingRow | null) => {
     if (!data) {
-      // No readings have EVER been received for this device. Every live metric
-      // stays null so the UI reports "No sensor data recorded" rather than a
-      // fabricated or zero value.
-      //
-      // Guarded by "we have never shown one for this device": a request issued
-      // before the device's first reading can resolve after it, and blanking
-      // live values here would make a healthy new device claim it has never
-      // reported.
       setRooms((prev) =>
         prev.map((r) =>
           r.deviceId === deviceId && r.lastReadingAt === null
@@ -484,18 +476,31 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
     }
 
     const incomingMs = new Date(data.created_at).getTime();
-    // Same shared threshold the offline SMS uses - see deviceConnectivity.ts.
     const online = isDeviceOnline(data.created_at);
+    const raw = {
+      co2: data.co2 ?? null,
+      lpg: data.lpg ?? null,
+      temp: data.temp ?? null,
+      humidity: data.humidity ?? null,
+    };
+    const allZero = raw.co2 === 0 && raw.lpg === 0 && raw.temp === 0 && raw.humidity === 0;
+    const finite = (v: number | null) => v != null && Number.isFinite(v);
+    const bad = (m: "co2" | "lpg" | "temp" | "humidity", v: number | null) => {
+      if (v == null) return false;
+      if (!finite(v)) return true;
+      if (allZero) return true;
+      if (m === "co2" || m === "lpg") return v < 0 || v > 10000;
+      if (m === "temp") return v < -40 || v > 80 || (v === 0 && raw.humidity === 0);
+      if (m === "humidity") return v < 0 || v > 100 || (v === 0 && raw.temp === 0);
+      return false;
+    };
+    const sanitized = {
+      co2: bad("co2", raw.co2) ? null : raw.co2,
+      lpg: bad("lpg", raw.lpg) ? null : raw.lpg,
+      temp: bad("temp", raw.temp) ? null : raw.temp,
+      humidity: bad("humidity", raw.humidity) ? null : raw.humidity,
+    };
 
-    // Assign the sensor's values verbatim. A NULL in the reading row stays
-    // NULL - it is not replaced by a previous value or a zero, because the
-    // sensor genuinely returned nothing for that metric.
-    //
-    // Only ever move forward in time. The realtime INSERT handler and this
-    // poller both write the same room, so whichever response happens to land
-    // last wins unless the merge itself is monotonic. Without this the
-    // dashboard visibly rolls back one reading whenever a poll that was
-    // dispatched earlier resolves after a newer realtime event.
     setRooms((prev) =>
       prev.map((r) => {
         if (r.deviceId !== deviceId) return r;
@@ -503,14 +508,12 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
         if (currentMs !== null && incomingMs <= currentMs) return r;
         return {
           ...r,
-          lpg: data.lpg ?? null,
-          co2: data.co2 ?? null,
-          temp: data.temp ?? null,
-          humidity: data.humidity ?? null,
+          lpg: sanitized.lpg,
+          co2: sanitized.co2,
+          temp: sanitized.temp,
+          humidity: sanitized.humidity,
           online,
           lastReadingAt: data.created_at,
-          // The newest signal of ANY kind: this reading, or a rooms.last_seen
-          // that is even newer. Connectivity is derived from this value.
           lastSeenAt: newestTimestamp(r.lastSeenAt, data.created_at),
         };
       })
@@ -606,24 +609,31 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
         (payload) => {
           const row = payload.new as ReadingRow;
           setRooms((prev) =>
-            prev.map((r) =>
-              r.deviceId === row.device_id
-                ? {
-                    ...r,
-                    // Verbatim: a NULL metric stays NULL.
-                    lpg: row.lpg ?? null,
-                    co2: row.co2 ?? null,
-                    temp: row.temp ?? null,
-                    humidity: row.humidity ?? null,
-                    // A fresh row means the device is back - evaluated against
-                    // the same shared threshold as the offline SMS, so the pill
-                    // and the alert can never disagree.
-                    online: isDeviceOnline(row.created_at),
-                    lastReadingAt: row.created_at,
-                    lastSeenAt: newestTimestamp(r.lastSeenAt, row.created_at),
-                  }
-                : r
-            )
+            prev.map((r) => {
+              if (r.deviceId !== row.device_id) return r;
+              const raw = { co2: row.co2 ?? null, lpg: row.lpg ?? null, temp: row.temp ?? null, humidity: row.humidity ?? null };
+              const allZero = raw.co2 === 0 && raw.lpg === 0 && raw.temp === 0 && raw.humidity === 0;
+              const finite = (v: number | null) => v != null && Number.isFinite(v);
+              const bad = (m: "co2" | "lpg" | "temp" | "humidity", v: number | null) => {
+                if (v == null) return false;
+                if (!finite(v)) return true;
+                if (allZero) return true;
+                if (m === "co2" || m === "lpg") return v < 0 || v > 10000;
+                if (m === "temp") return v < -40 || v > 80 || (v === 0 && raw.humidity === 0);
+                if (m === "humidity") return v < 0 || v > 100 || (v === 0 && raw.temp === 0);
+                return false;
+              };
+              return {
+                ...r,
+                lpg: bad("lpg", raw.lpg) ? null : raw.lpg,
+                co2: bad("co2", raw.co2) ? null : raw.co2,
+                temp: bad("temp", raw.temp) ? null : raw.temp,
+                humidity: bad("humidity", raw.humidity) ? null : raw.humidity,
+                online: isDeviceOnline(row.created_at),
+                lastReadingAt: row.created_at,
+                lastSeenAt: newestTimestamp(r.lastSeenAt, row.created_at),
+              };
+            })
           );
         }
       )

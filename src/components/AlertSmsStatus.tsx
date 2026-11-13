@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 
 type BadgeState = "sent" | "failed" | "skipped" | "none";
@@ -11,11 +11,14 @@ interface SmsStatus {
 const reasonText: Record<string, string> = {
   skipped_quality: "quality",
   skipped_open_incident: "open incident",
-  skipped_rate_limited: "rate limited",
+  skipped_rate_limited: "rate limited/cooldown",
   skipped_no_recipients: "no recipients",
   skipped_low_credits: "low credits",
   skipped_no_number: "no number",
   skipped_dry_run: "dry run",
+  skipped_acknowledged: "acknowledged",
+  skipped_disabled: "disabled",
+  invalid_number: "invalid number",
 };
 
 const cache = new Map<number, SmsStatus>();
@@ -26,7 +29,7 @@ let channel: any = null;
 
 function mapStatus(status: string): SmsStatus {
   if (status === "submitted" || status === "in_progress") return { state: "sent", reason: null };
-  if (status === "failed" || status === "invalid_number") return { state: "failed", reason: null };
+  if (status === "failed" || status === "invalid_number") return { state: "failed", reason: reasonText[status] ?? null };
   return { state: "skipped", reason: reasonText[status] ?? status.replace(/^skipped_/, "") };
 }
 
@@ -141,7 +144,7 @@ export default function AlertSmsStatus({ notificationId }: { notificationId: num
     status.state === "sent"
       ? "SMS sent"
       : status.state === "failed"
-      ? "SMS failed"
+      ? (status.reason ? `SMS failed: ${status.reason}` : "SMS failed")
       : `SMS skipped: ${status.reason ?? "unknown"}`;
 
   const tone =
@@ -157,3 +160,4 @@ export default function AlertSmsStatus({ notificationId }: { notificationId: num
     </span>
   );
 }
+

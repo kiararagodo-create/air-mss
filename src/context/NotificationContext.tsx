@@ -1,4 +1,4 @@
-import {
+﻿import {
   createContext,
   useCallback,
   useContext,
@@ -19,10 +19,6 @@ import {
 import type { Thresholds } from "../data/Data";
 import type { AirNotification } from "../lib/notifications";
 
-// ---------------------------------------------------------------------------
-// User mailbox (existing public.notifications: approval, report_ready, etc.)
-// ---------------------------------------------------------------------------
-
 export interface Notification {
   id: number;
   user_id: string;
@@ -32,13 +28,6 @@ export interface Notification {
   read: boolean;
   created_at: string;
 }
-
-// ---------------------------------------------------------------------------
-// Sensor alerts (new air_notifications). RLS already scopes rows to
-// admin / addressed personnel, so the client just reads what it can see.
-// The detail drawer on /notifications does its own richer fetch; this context
-// is only for the bell (latest ~10 + unread badge).
-// ---------------------------------------------------------------------------
 
 export interface BellAlertItem {
   id: number;
@@ -72,13 +61,8 @@ export interface LatestAction {
   taken_at: string;
 }
 
-// Live alert: a warning/high/danger condition computed client-side from the
-// SAME live readings + saved thresholds the dashboard grades with. The bell
-// previously counted ONLY rows in air_notifications, which are created
-// server-side by the air-alerts Edge Function via a readings webhook. When
-// that webhook/function is not deployed (or has not fired yet) the dashboard
-// can show a red DANGER banner while the bell badge stays at 0. Deriving
-// these here keeps the bell in lock-step with the banner it sits next to.
+// Live alert derived from the same readings/thresholds the dashboard uses.
+// This keeps the bell/action plan live even if server-side alert creation is delayed/misconfigured.
 export interface LiveBellAlert {
   id: string;
   device_id: string;
@@ -97,8 +81,8 @@ export interface LiveBellAlert {
   handled_by_role: string | null;
   handled_at: string | null;
   handled_action: string | null;
-  /** Server row was resolved but the live condition is still present. */
   stillPresent?: boolean;
+  saturationNote?: string | null;
 }
 
 interface NotificationsContextValue {
@@ -108,23 +92,18 @@ interface NotificationsContextValue {
   markRead: (id: number) => Promise<void>;
   markAllRead: () => Promise<void>;
   refresh: () => Promise<void>;
-  // Sensor alerts for the bell.
   alerts: BellAlertItem[];
   alertUnreadCount: number;
   alertsLoading: boolean;
   markAlertRead: (id: number) => Promise<void>;
   markAllAlertsRead: () => Promise<void>;
-  // Live (client-derived) alerts — see LiveBellAlert above.
   liveAlerts: LiveBellAlert[];
   liveUnreadCount: number;
-  /** Latest personnel action per saved alert id + recent actions across alerts. */
   latestActionByNotification: Record<number, LatestAction>;
   recentActions: LatestAction[];
   dismissLiveAlert: (id: string) => void;
   dismissAllLiveAlerts: () => void;
-  /** unreadCount + alertUnreadCount + liveUnreadCount. */
   totalUnread: number;
-  /** Any visible danger/critical alert (live or server) — drives pulsing. */
   hasDangerAlert: boolean;
 }
 
@@ -150,21 +129,27 @@ function labelForLive(
     return { level_label: "Cool", severity: "warning", reading_unit: "°C" };
   }
   if (level === "danger")
-    return { level_label: value < th.humidity.dryBelow ? "Dry" : "Mold Risk", severity: "danger", reading_unit: "% RH" };
-  return { level_label: "Low", severity: "warning", reading_unit: "% RH" };
+    return { level_label: value < th.humidity.dryBelow ? "Dry" : "Mold Risk", severity: "danger", reading_unit: "%RH" };
+  return { level_label: "Low", severity: "warning", reading_unit: "%RH" };
 }
 
-const SEVERITY_RANK: Record<string, number> = { critical: 4, danger: 3, high: 2, warning: 1, info: 0 };
+function formatLiveReading(sensor: string, value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "N/A";
+  if (sensor === "temp") return `${value.toFixed(1)} °C`;
+  if (sensor === "humidity") return `${Math.round(value)} %RH`;
+  return `${Math.round(value)} ppm`;
+}
 
-const NotificationsContext = createContext<NotificationsContextValue | undefined>(
-  undefined
-);
+function saturationNote(sensor: string, value: number | null): string | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (sensor === "co2" && value >= 5000) return "At sensor max (5000 ppm)";
+  if (sensor === "lpg" && value >= 10000) return "At sensor max (10000 ppm)";
+  return null;
+}
 
-export function NotificationsProvider({
-  children,
-}: {
-  children: ReactNode;
-}) {
+const NotificationsContext = createContext<NotificationsContextValue | undefined>(undefined);
+
+export function NotificationsProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const { rooms, thresholds } = useRooms();
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -191,9 +176,9 @@ export function NotificationsProvider({
 
       if (error) {
         if (error.code === "PGRST205" || /could not find the table/i.test(error.message)) {
-            setNotifications([]);
+          setNotifications([]);
         } else {
-            console.error("Failed to fetch notifications:", error.message);
+          console.error("Failed to fetch notifications:", error.message);
         }
       } else {
         setNotifications((data as Notification[]) ?? []);
@@ -213,25 +198,19 @@ export function NotificationsProvider({
     }
     try {
       const [{ data: rows, error }, { data: reads, error: readsError }, { data: actionRows }] = await Promise.all([
-        supabase
-          .from("air_notifications")
-          .select("*")
-          .order("created_at", { ascending: false })
-          .limit(10),
+        supabase.from("air_notifications").select("*").order("created_at", { ascending: false }).limit(20),
         supabase.from("notification_reads").select("notification_id").eq("user_id", user.id),
         supabase.from("notification_actions")
           .select("id, notification_id, personnel_name, personnel_role, action, note, taken_at")
           .order("taken_at", { ascending: false })
           .limit(30),
       ]);
-if (error) {
+      if (error) {
         if (error.code === "PGRST205" || /could not find the table/i.test(error.message)) {
-            setAlerts([]);
-            setLatestActionByNotification({});
-            setRecentActions([]);
-            return;
+          setAlerts([]);
         } else {
-            console.error("Failed to fetch sensor alerts:", error.message);
+          console.error("Failed to fetch sensor alerts:", error.message);
+          setAlerts([]);
         }
         setLatestActionByNotification({});
         setRecentActions([]);
@@ -250,9 +229,9 @@ if (error) {
             const latest = byNotif[a.id];
             return {
               ...a,
-              handled_action: latest?.action ?? null,
+              handled_action: latest?.action ?? (a as any).handled_action ?? null,
               isRead: readSet.has(a.id),
-            };
+            } as BellAlertItem;
           })
         );
       }
@@ -269,35 +248,16 @@ if (error) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, fetchAlerts]);
 
-  // Realtime: new mailbox notifications (e.g. an admin just approved someone)
-  // appear instantly without a page refresh.
   useEffect(() => {
     if (!user) return;
     const channel = supabase
       .channel("notifications-live")
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "notifications",
-          filter: `user_id=eq.${user.id}`,
-        },
-        (payload) => {
-          setNotifications((prev) => {
-            const next = [payload.new as Notification, ...prev];
-            return next.slice(0, 50);
-          });
-        }
-      )
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${user.id}` },
+        (payload) => { setNotifications((prev) => [payload.new as Notification, ...prev].slice(0, 50)); })
       .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [user?.id]);
 
-  // Realtime: sensor alerts + actions (handled-by) update the bell live.
   useEffect(() => {
     if (!user) return;
     const refresh = () => { fetchAlerts(); };
@@ -305,11 +265,11 @@ if (error) {
       .channel("air-alerts-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "air_notifications" }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "notification_actions" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "sms_logs" }, refresh)
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [user?.id, fetchAlerts]);
 
-  // Polling fallback (~10s) for missed realtime events.
   useEffect(() => {
     if (!user) return;
     const t = setInterval(() => { fetchAlerts(); fetchNotifications(); }, 10_000);
@@ -318,30 +278,14 @@ if (error) {
   }, [user?.id, fetchAlerts]);
 
   async function markRead(id: number) {
-    const { error } = await supabase
-      .from("notifications")
-      .update({ read: true })
-      .eq("id", id)
-      .eq("user_id", user?.id ?? "");
-    if (!error) {
-      setNotifications((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, read: true } : n))
-      );
-    }
+    const { error } = await supabase.from("notifications").update({ read: true }).eq("id", id).eq("user_id", user?.id ?? "");
+    if (!error) setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
   }
-
   async function markAllRead() {
     if (!user) return;
-    const { error } = await supabase
-      .from("notifications")
-      .update({ read: true })
-      .eq("user_id", user.id)
-      .eq("read", false);
-    if (!error) {
-      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-    }
+    const { error } = await supabase.from("notifications").update({ read: true }).eq("user_id", user.id).eq("read", false);
+    if (!error) setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
   }
-
   async function markAlertRead(id: number) {
     if (!user) return;
     await supabase.from("notification_reads").upsert(
@@ -350,7 +294,6 @@ if (error) {
     );
     setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, isRead: true } : a)));
   }
-
   async function markAllAlertsRead() {
     if (!user) return;
     const unread = alerts.filter((a) => !a.isRead).map((a) => a.id);
@@ -364,11 +307,11 @@ if (error) {
 
   const liveAlerts = useMemo<LiveBellAlert[]>(() => {
     if (!rooms.length) return [];
+    // Prefer server alert rows when present (open). If no open server row exists for a room+sensor,
+    // show a live alert so dashboard/bell/action plan stay in sync with the status card.
     const serverCovered = new Set(
       alerts.filter((a) => a.status !== "resolved").map((a) => `${a.device_id}:${a.sensor_type}`)
     );
-    // Resolved server rows per device+sensor: if the live condition is still
-    // present after a resolve, keep showing it labelled with who resolved it.
     const resolvedByKey = new Map<string, BellAlertItem>();
     for (const a of alerts) {
       if (a.status === "resolved") resolvedByKey.set(`${a.device_id}:${a.sensor_type}`, a);
@@ -378,14 +321,20 @@ if (error) {
     for (const room of rooms) {
       const readings = { co2: room.co2, lpg: room.lpg, temp: room.temp, humidity: room.humidity };
       if (!hasAnyReading(readings)) continue;
+      const allZero = readings.co2 === 0 && readings.lpg === 0 && readings.temp === 0 && readings.humidity === 0;
+      if (allZero) continue; // likely sensor fault/disconnect
       for (const m of metrics) {
         const value = readings[m];
         if (value == null || !Number.isFinite(value)) continue;
+        if (m === "co2" || m === "lpg") { if (value < 0 || value > 10000) continue; }
+        if (m === "temp") { if (value < -40 || value > 80 || (value === 0 && readings.humidity === 0)) continue; }
+        if (m === "humidity") { if (value < 0 || value > 100 || (value === 0 && readings.temp === 0)) continue; }
         const level = metricSeverity(m, value, thresholds);
         if (level === "ok") continue;
-        if (serverCovered.has(`${room.id}:${m}`)) continue;
+        if (serverCovered.has(`${room.id}:${m}`)) continue; // server alert already covers it
         const { level_label, severity, reading_unit } = labelForLive(m, level, value, thresholds);
         const resolved = resolvedByKey.get(`${room.id}:${m}`);
+        const sat = saturationNote(m, value);
         out.push({
           id: `live-${room.id}-${m}-${level}`,
           device_id: room.id,
@@ -396,7 +345,7 @@ if (error) {
           severity,
           reading_value: value,
           reading_unit,
-          message: `${room.name} ${m.toUpperCase()} ${value} ${reading_unit} — ${level_label}`,
+          message: `${room.name} ${m.toUpperCase()} ${formatLiveReading(m, value)} - ${level_label}${sat ? ` (${sat})` : ""}`,
           status: "open",
           created_at: room.lastReadingAt ?? new Date().toISOString(),
           isLive: true,
@@ -405,8 +354,10 @@ if (error) {
           handled_at: resolved?.handled_at ?? null,
           handled_action: resolved?.handled_action ?? null,
           stillPresent: !!resolved?.handled_by_name,
+          saturationNote: sat,
         });
       }
+      // Offline live alert (if no open server offline alert)
       if (!room.online && room.lastReadingAt && !serverCovered.has(`${room.id}:device`)) {
         const age = Date.now() - new Date(room.lastReadingAt).getTime();
         if (age > 30_000) {
@@ -421,20 +372,25 @@ if (error) {
             severity: "warning",
             reading_value: null,
             reading_unit: "",
-            message: `${room.name} device offline`,
+            message: `${room.name} sensor is offline (no recent reading).`,
             status: "open",
-            created_at: room.lastReadingAt,
+            created_at: room.lastReadingAt ?? new Date().toISOString(),
             isLive: true,
             handled_by_name: resolvedOffline?.handled_by_name ?? null,
             handled_by_role: resolvedOffline?.handled_by_role ?? null,
             handled_at: resolvedOffline?.handled_at ?? null,
             handled_action: resolvedOffline?.handled_action ?? null,
             stillPresent: !!resolvedOffline?.handled_by_name,
+            saturationNote: null,
           });
         }
       }
     }
-    return out.sort((a, b) => (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0));
+    out.sort((a, b) => {
+      const rank = (s: string) => (s === "critical" ? 4 : s === "danger" ? 3 : s === "high" ? 2 : s === "warning" ? 1 : 0);
+      return rank(b.severity) - rank(a.severity) || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+    return out;
   }, [rooms, thresholds, alerts]);
 
   const visibleLiveAlerts = useMemo(
@@ -442,61 +398,40 @@ if (error) {
     [liveAlerts, dismissedLive]
   );
 
-  const dismissLiveAlert = useCallback((id: string) => {
+  function dismissLiveAlert(id: string) {
     setDismissedLive((prev) => new Set(prev).add(id));
-  }, []);
-
-  const dismissAllLiveAlerts = useCallback(() => {
+  }
+  function dismissAllLiveAlerts() {
     setDismissedLive((prev) => {
       const next = new Set(prev);
-      visibleLiveAlerts.forEach((a) => next.add(a.id));
+      liveAlerts.forEach((a) => next.add(a.id));
       return next;
     });
-  }, [visibleLiveAlerts]);
+  }
 
   const unreadCount = notifications.filter((n) => !n.read).length;
-  const alertUnreadCount = alerts.filter((a) => !a.isRead).length;
+  const alertUnreadCount = alerts.filter((a) => !a.isRead && a.status !== "resolved").length;
   const liveUnreadCount = visibleLiveAlerts.length;
   const totalUnread = unreadCount + alertUnreadCount + liveUnreadCount;
   const hasDangerAlert =
-    visibleLiveAlerts.some((a) => a.severity === "danger" || a.severity === "critical") ||
-    alerts.some((a) => !a.isRead && (a.severity === "danger" || a.severity === "critical"));
+    alerts.some((a) => a.status !== "resolved" && (a.severity === "danger" || a.severity === "critical")) ||
+    visibleLiveAlerts.some((a) => a.severity === "danger" || a.severity === "critical");
 
-  return (
-    <NotificationsContext.Provider
-      value={{
-        notifications,
-        unreadCount,
-        loading,
-        markRead,
-        markAllRead,
-        refresh: fetchNotifications,
-        alerts,
-        alertUnreadCount,
-        alertsLoading,
-        markAlertRead,
-        markAllAlertsRead,
-        liveAlerts: visibleLiveAlerts,
-        liveUnreadCount,
-        latestActionByNotification,
-        recentActions,
-        dismissLiveAlert,
-        dismissAllLiveAlerts,
-        totalUnread,
-        hasDangerAlert,
-      }}
-    >
-      {children}
-    </NotificationsContext.Provider>
-  );
+  const value = useMemo<NotificationsContextValue>(() => ({
+    notifications, unreadCount, loading, markRead, markAllRead,
+    refresh: async () => { await Promise.all([fetchNotifications(), fetchAlerts()]); },
+    alerts, alertUnreadCount, alertsLoading, markAlertRead, markAllAlertsRead,
+    liveAlerts: visibleLiveAlerts, liveUnreadCount,
+    latestActionByNotification, recentActions,
+    dismissLiveAlert, dismissAllLiveAlerts,
+    totalUnread, hasDangerAlert,
+  }), [notifications, unreadCount, loading, alerts, alertUnreadCount, alertsLoading, visibleLiveAlerts, liveUnreadCount, latestActionByNotification, recentActions, totalUnread, hasDangerAlert, fetchAlerts]);
+
+  return <NotificationsContext.Provider value={value}>{children}</NotificationsContext.Provider>;
 }
 
 export function useNotifications() {
   const ctx = useContext(NotificationsContext);
-  if (!ctx) {
-    throw new Error(
-      "useNotifications must be used within a NotificationsProvider"
-    );
-  }
+  if (!ctx) throw new Error("useNotifications must be used within NotificationsProvider");
   return ctx;
 }

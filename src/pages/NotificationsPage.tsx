@@ -29,6 +29,17 @@ interface Filters {
 
 const EMPTY_FILTERS: Filters = { severity: "all", status: "all", deviceId: "all", sensor: "all", from: "", to: "", search: "" };
 
+type SmsFailure = Pick<SmsLog, "id" | "notification_id" | "recipient_name" | "recipient_role" | "phone" | "status" | "provider_response" | "sent_at" | "send_mode" | "is_auto">;
+
+function smsFailureText(row: SmsFailure): string {
+  const who = row.recipient_name ? `${row.recipient_name}${row.recipient_role ? ` (${row.recipient_role})` : ""}` : "Unknown recipient";
+  const phone = row.phone ? ` ${maskPhone(row.phone)}` : "";
+  const alert = row.notification_id != null ? `alert #${row.notification_id}` : "no alert";
+  const mode = row.is_auto || row.send_mode === "auto" ? "auto" : "manual";
+  const reason = row.provider_response ? ` - ${row.provider_response}` : "";
+  return `${who}${phone} · ${alert} · ${row.status} (${mode})${reason}`;
+}
+
 export default function NotificationsPage() {
   const { rooms, thresholds, setSelectedId } = useRooms();
   const { role } = useAuth();
@@ -47,21 +58,35 @@ export default function NotificationsPage() {
   const [smsRef, setSmsRef] = useState<{ ref: AlertRef; severity: string; levelLabel: string; custom: boolean } | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [smsWarning, setSmsWarning] = useState<string | null>(null);
+  const [smsFailures, setSmsFailures] = useState<SmsFailure[]>([]);
 
   function showToast(kind: "ok" | "err", text: string) {
     setToast({ kind, text });
     window.setTimeout(() => setToast(null), 5000);
   }
 
+  const loadSmsFailures = useCallback(async () => {
+    const since = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const { data } = await supabase
+      .from("sms_logs")
+      .select("id, notification_id, recipient_name, recipient_role, phone, status, provider_response, sent_at, send_mode, is_auto")
+      .in("status", ["failed", "invalid_number"])
+      .gte("sent_at", since)
+      .order("sent_at", { ascending: false })
+      .limit(20);
+    setSmsFailures((data as SmsFailure[]) ?? []);
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    let q = supabase.from("air_notifications").select("*").order("created_at", { ascending: false }).limit(500);
+    const q = supabase.from("air_notifications").select("*").order("created_at", { ascending: false }).limit(500);
     const { data, error } = await q;
     if (error) { setError({ message: error.message, code: (error as any).code }); setLoading(false); return; }
     setRows((data as AirNotification[]) ?? []);
     setLoading(false);
-  }, []);
+    void loadSmsFailures();
+  }, [loadSmsFailures]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -69,22 +94,21 @@ export default function NotificationsPage() {
     if (role !== "admin") return;
     (async () => {
       const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-      const { count: rl } = await supabase.from("sms_logs").select("id", { count: "exact", head: true }).eq("status", "skipped_rate_limited").gte("sent_at", since);
       const { count: lc } = await supabase.from("sms_logs").select("id", { count: "exact", head: true }).eq("status", "skipped_low_credits").gte("sent_at", since);
-      if ((rl ?? 0) > 0) setSmsWarning(`SMS safety cap reached: ${rl} message(s) skipped in the last 24h.`);
-      else if ((lc ?? 0) > 0) setSmsWarning(`Low SMS credits: ${lc} message(s) skipped in the last 24h.`);
+      if ((lc ?? 0) > 0) setSmsWarning(`Low SMS credits: ${lc} message(s) skipped in the last 24h.`);
       else setSmsWarning(null);
     })();
   }, [role, rows]);
 
-  // Realtime: new alerts / actions refresh the list live.
+  // Realtime: new alerts / actions / sms outcomes refresh the list live.
   useEffect(() => {
     const ch = supabase.channel("notif-page-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "air_notifications" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "notification_actions" }, () => load())
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sms_logs" }, () => loadSmsFailures())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [load]);
+  }, [load, loadSmsFailures]);
 
   const filtered = useMemo(() => {
     const s = filters.search.trim().toLowerCase();
@@ -146,6 +170,23 @@ export default function NotificationsPage() {
       {smsWarning && (
         <div className="mt-3 rounded-xl px-4 py-3 text-sm font-medium bg-amber-50 border border-amber-200 text-amber-800">
           {smsWarning}
+        </div>
+      )}
+      {smsFailures.length > 0 && (
+        <div className="mt-3 rounded-xl px-4 py-3 text-sm bg-red-50 border border-red-200 text-red-800">
+          <div className="font-bold flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4" />
+            SMS send failure{smsFailures.length === 1 ? "" : "s"} (last 48h)
+          </div>
+          <div className="text-[12px] text-red-700 mt-0.5">Every attempt is logged to sms_logs and Action Log. Check iProg token/credits, number format, and recipient SMS settings.</div>
+          <ul className="mt-2 mb-0 pl-4 space-y-1">
+            {smsFailures.slice(0, 8).map((f) => (
+              <li key={f.id} className="text-[12px] leading-snug">
+                <span className="font-semibold">{manilaTime(f.sent_at)}</span> — {smsFailureText(f)}
+              </li>
+            ))}
+          </ul>
+          {smsFailures.length > 8 && <div className="text-[11px] mt-1 text-red-700">+{smsFailures.length - 8} more. Open an alert detail to inspect its SMS log.</div>}
         </div>
       )}
 
@@ -226,7 +267,20 @@ export default function NotificationsPage() {
                   </span>
                   <span className="block text-[11px] text-slate-400">
                     {SENSOR_LABEL[(a.sensor_type as import("../lib/notifications").SensorType)] ?? a.sensor_type}
-                    {a.reading_value != null ? ` · ${a.sensor_type === "temp" ? a.reading_value.toFixed(1) : Math.round(a.reading_value)} ${a.reading_unit}` : " · no recent reading"}
+                    {(() => {
+                      const v = a.reading_value;
+                      if (v == null || !Number.isFinite(v)) return " · no recent reading";
+                      const allZeroFault = v === 0 && (a.level_label === "Freeze" || a.level_label === "Dry");
+                      const outOfRange =
+                        (a.sensor_type === "co2" && (v < 0 || v > 10000)) ||
+                        (a.sensor_type === "lpg" && (v < 0 || v > 10000)) ||
+                        (a.sensor_type === "temp" && (v < -40 || v > 80 || allZeroFault)) ||
+                        (a.sensor_type === "humidity" && (v < 0 || v > 100 || allZeroFault));
+                      if (outOfRange) return " · Sensor error";
+                      if (a.sensor_type === "temp") return ` · ${v.toFixed(1)} ${a.reading_unit || "°C"}`;
+                      if (a.sensor_type === "humidity") return ` · ${Math.round(v)} ${a.reading_unit || "%RH"}`;
+                      return ` · ${Math.round(v)} ${a.reading_unit || "ppm"}`;
+                    })()}
                     {" · "}{relativeTime(a.created_at)}
                   </span>
                   <span className={`block text-[11px] font-medium ${handled.unhandled ? "text-red-600 font-bold" : a.handled_by_name ? "text-teal-700" : "text-slate-400"}`}>
@@ -344,11 +398,12 @@ export default function NotificationsPage() {
           severity={smsRef.severity}
           levelLabel={smsRef.levelLabel}
           custom={smsRef.custom}
-onSent={(info) => {
-    const sent = info.ok ? info.results.filter((r) => r.status === "submitted").length : 0;
-    showToast("ok", `SMS: ${sent} sent, ${info.results.length - sent} failed/skipped.`);
-    load();
-  }}
+          onSent={(info) => {
+            const sent = info.ok ? info.results.filter((r) => r.status === "submitted").length : 0;
+            const failed = info.results.filter((r) => r.status === "failed").length;
+            showToast(failed > 0 || !info.ok ? "err" : "ok", `SMS: ${sent} sent, ${info.results.length - sent} failed/skipped.`);
+            load();
+          }}
         />
       )}
     </div>
@@ -363,14 +418,25 @@ function ActionLog({ rows }: { rows: AirNotification[] }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from("notification_actions")
-      .select("*").order("taken_at", { ascending: false }).limit(200);
-    const list = ((data as NotificationAction[]) ?? []).map((a) => ({
-      ...a, alert: rows.find((r) => r.id === a.notification_id),
-    }));
-    // Rows may not include older alerts outside the first 500; fetch titles for missing ids.
-    setActions(list);
-    setLoading(false);
+    try {
+      const { data, error } = await supabase.from("notification_actions")
+        .select("*").order("taken_at", { ascending: false }).limit(200);
+      if (error) {
+        console.error("Failed to load action log:", error.message);
+        setActions([]);
+        return;
+      }
+      const raw = ((data as NotificationAction[]) ?? []);
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      const missingIds = [...new Set(raw.map((a) => a.notification_id).filter((id) => !byId.has(id)))];
+      if (missingIds.length > 0) {
+        const { data: extra } = await supabase.from("air_notifications").select("*").in("id", missingIds);
+        for (const n of ((extra as AirNotification[]) ?? [])) byId.set(n.id, n);
+      }
+      setActions(raw.map((a) => ({ ...a, alert: byId.get(a.notification_id) })));
+    } finally {
+      setLoading(false);
+    }
   }, [rows]);
 
   useEffect(() => { load(); }, [load]);
@@ -538,7 +604,7 @@ function NotificationDetail({ n, thresholds, onClose, role, onSms }: {
                 body={`${SENSOR_LABEL[n.sensor_type]} ${formatReading(n)} — ${n.level_label}`} />
               {[
                 ...sms.map((s) => ({ t: s.sent_at, key: `sms-${s.id}`, icon: <MessageCircle className="w-4 h-4" />,
-                  title: `SMS sent to ${s.recipient_name} (${s.recipient_role})`,
+                  title: `SMS ${s.is_auto || s.send_mode === "auto" ? "(auto) " : ""}sent to ${s.recipient_name} (${s.recipient_role})`,
                   body: `${maskPhone(s.phone)} · ${s.status}${s.provider_response ? ` · ${s.provider_response}` : ""}` })),
                 ...actions.map((a) => ({ t: a.taken_at, key: `act-${a.id}`, icon: <CheckCircle2 className="w-4 h-4" />,
                   title: `Action taken by ${a.personnel_name} (${a.personnel_role})`,
@@ -557,9 +623,9 @@ function NotificationDetail({ n, thresholds, onClose, role, onSms }: {
                 <div key={s.id} className="border border-slate-100 rounded-xl p-3 text-[12px]">
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold text-slate-700">{s.recipient_name} · {s.recipient_role}</span>
-                    <Badge label={s.status} tone={s.status === "failed" || s.status === "skipped_no_number" ? "danger" : "success"} />
+                    <Badge label={s.status} tone={s.status === "failed" || s.status === "skipped_no_number" || s.status === "invalid_number" ? "danger" : "success"} />
                   </div>
-                  <div className="text-slate-500 mt-0.5">{maskPhone(s.phone)} · {manilaTime(s.sent_at)}</div>
+                  <div className="text-slate-500 mt-0.5">{maskPhone(s.phone)} · {manilaTime(s.sent_at)} · {s.is_auto || s.send_mode === "auto" ? "auto" : "manual"}</div>
                   <p className="text-slate-600 mt-1.5 mb-0 whitespace-pre-wrap">{s.message}</p>
                   {s.provider_response && <p className="text-[11px] text-slate-400 mt-1 mb-0">Provider: {s.provider_response}</p>}
                   {s.status === "failed" && perms.canSendSms && (

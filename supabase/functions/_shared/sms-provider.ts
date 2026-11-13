@@ -1,43 +1,5 @@
-// Provider-pluggable SMS layer (server-only; secrets never reach the browser).
-//
-// One entry point for every function that sends SMS:
-//
-//   sendSms({ to, message }) -> { ok, provider, providerMessageId, status, raw, error }
-//
-// The provider is picked by the SMS_PROVIDER secret (default "semaphore").
-// Supported adapters, each documented against the provider's official API:
-//
-//   semaphore  POST https://api.semaphore.co/api/v4/messages
-//              form fields: apikey, number, message, sendername?
-//              auth: apikey form field (SEMAPHORE_API_KEY, optional
-//              SEMAPHORE_SENDER_NAME). Numbers: 09XXXXXXXXX (docs examples).
-//              Balance: GET /api/v4/account?apikey=... -> credit_balance.
-//              Docs: https://api.semaphore.co/docs
-//   philsms    POST https://app.philsms.com/api/v3/sms/send
-//              JSON: { recipient, sender_id, type: "plain"|"unicode", message }
-//              auth: Authorization: Bearer PHILSMS_API_TOKEN, Accept: application/json.
-//              sender_id is REQUIRED by the API; PHILSMS_SENDER_ID secret,
-//              default "PhilSMS". Numbers: 639XXXXXXXXX.
-//              Balance: GET /api/v3/balance (Bearer) -> remaining units.
-//              Docs: https://app.philsms.com/developers/documentation
-//   iprog      POST https://sms.iprogtech.com/api/v1/sms_messages
-//              JSON: { api_token, phone_number, message }.
-//              Secrets: IPROG_API_TOKEN (legacy alias IPROG_SMS_API_TOKEN).
-//              Numbers: 639XXXXXXXXX.
-//              Balance: GET /api/v1/account/sms_credits?api_token=...
-//                       -> data.load_balance.
-//              Docs: https://sms.iprogtech.com/api/v1/documentation
-//   iprog      POST https://sms.iprogtech.com/api/v1/sms_messages
-//              JSON: { api_token, phone_number, message }.
-//              Secrets: IPROG_API_TOKEN (legacy alias IPROG_SMS_API_TOKEN).
-//              Numbers: 639XXXXXXXXX (normalized to 09XXXXXXXXX).
-//              Balance: GET /api/v1/account/sms_credits?api_token=...
-//                       -> data.load_balance.
-//              Docs: https://sms.iprogtech.com/api/v1/documentation
-//
-// DRY_RUN=true: no HTTP call is made; the attempt is logged and reported as
-// a successful dry run (ok:true, status:"dry_run") so flows can be tested
-// end-to-end without spending credits.
+﻿// Provider-pluggable SMS layer (server-only; secrets never reach the browser).
+// A.I.R. uses iProgSMS for automatic and manual SMS.
 
 export type SmsProviderName = "semaphore" | "philsms" | "iprog";
 
@@ -67,12 +29,6 @@ const LABELS: Record<SmsProviderName, string> = {
   iprog: "IPROG",
 };
 
-/**
- * Sanitize a secret pasted into the Supabase dashboard: trims whitespace and
- * strips surrounding quotes / angle brackets people often copy accidentally
- * (e.g. `"my-key"` or `<my-key>`). Interior content is left untouched.
- * Returns "" for null/empty so callers can reject it with a clear error.
- */
 export function sanitizeSecret(raw: string | null | undefined): string {
   let s = (raw ?? "").trim();
   for (;;) {
@@ -83,17 +39,16 @@ export function sanitizeSecret(raw: string | null | undefined): string {
   return s;
 }
 
-/** Safe diagnostics fragment for logs: first 4 + last 2 chars of a key with
- *  the middle masked, plus its length. Secrets are NEVER logged in full. */
 export function maskedKey(key: string): string {
   if (!key) return "empty (len 0)";
   if (key.length <= 6) return `len ${key.length}`;
-  return `${key.slice(0, 4)}•••${key.slice(-2)} (len ${key.length})`;
+  return `${key.slice(0, 4)}***${key.slice(-2)} (len ${key.length})`;
 }
 
 export function getSmsConfig(): SmsConfig {
-  // iProg is the only supported provider for this project.
+  // iProgSMS is the only supported provider for this project.
   const provider: SmsProviderName = "iprog";
+  const iprogToken = sanitizeSecret(Deno.env.get("IPROG_SMS_API_TOKEN") ?? Deno.env.get("IPROG_API_TOKEN"));
   const cfg: SmsConfig = {
     provider,
     providerLabel: LABELS[provider],
@@ -107,10 +62,9 @@ export function getSmsConfig(): SmsConfig {
       token: sanitizeSecret(Deno.env.get("PHILSMS_API_TOKEN")),
       senderId: sanitizeSecret(Deno.env.get("PHILSMS_SENDER_ID")) || "PhilSMS",
     },
-      iprog: {
-      token: sanitizeSecret(Deno.env.get("IPROG_SMS_API_TOKEN")),
-    },
-    }
+    iprog: { token: iprogToken },
+  };
+  if (!cfg.iprog.token) cfg.missing.push("IPROG_SMS_API_TOKEN");
   return cfg;
 }
 
@@ -124,97 +78,25 @@ export function normalizeForProvider(raw: string | null | undefined, provider: S
   let d = raw.replace(/\D/g, "");
   if (!d) return null;
   if (d.startsWith("0063")) d = d.slice(4);
-  // Reduce to the 10-digit national number (9XXXXXXXXX) first.
   let national: string | null = null;
   if (d.startsWith("63") && d.length === 12) national = d.slice(2);
   else if (d.startsWith("9") && d.length === 10) national = d;
   else if (d.startsWith("09") && d.length === 11) national = d.slice(1);
   else if (d.length >= 10) national = d.replace(/^0+/, "").replace(/^63/, "");
   if (!national || national.length !== 10 || !national.startsWith("9")) return null;
-  // semaphore docs use 09XXXXXXXXX; iprog uses 09XXXXXXXXX too;
-  // philsms use 639XXXXXXXXX (E.164 without plus sign).
-  if (provider === "iprog") return `63${national}`;
-  return provider === "semaphore" ? `0${national}` : `63${national}`;
+  // iProgSMS expects 639XXXXXXXXX (without +). Semaphore commonly uses 09XXXXXXXXX.
+  if (provider === "iprog" || provider === "philsms") return `63${national}`;
+  return `0${national}`;
 }
 
 function fail(provider: SmsProviderName, error: string, raw: unknown = null): SmsResult {
   return { ok: false, provider, providerMessageId: null, status: "failed", raw, error };
 }
 
-async function sendSemaphore(cfg: SmsConfig, to: string, message: string): Promise<SmsResult> {
-  const number = normalizeForProvider(to, "semaphore");
-  if (!number) return fail("semaphore", `Invalid PH number: ${to}`);
-  const body = new URLSearchParams({
-    apikey: cfg.semaphore.apiKey,
-    number,
-    message,
-  });
-  if (cfg.semaphore.senderName) body.set("sendername", cfg.semaphore.senderName);
-  let res: Response;
-  try {
-    res = await fetch("https://api.semaphore.co/api/v4/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body,
-    });
-  } catch (e) {
-    return fail("semaphore", `network error: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  const text = await res.text();
-  let data: any = null;
-  try { data = JSON.parse(text); } catch { /* keep raw text below */ }
-  const first = Array.isArray(data) ? data[0] : data;
-  if (!res.ok) return fail("semaphore", `HTTP ${res.status}: ${text}`.slice(0, 500), data ?? text);
-  if (first?.status && String(first.status).toLowerCase() === "failed") {
-    return fail("semaphore", first?.message ?? "Semaphore reported status=Failed", data);
-  }
-  return {
-    ok: true, provider: "semaphore",
-    providerMessageId: first?.message_id != null ? String(first.message_id) : null,
-    status: String(first?.status ?? "Queued"), raw: data ?? text, error: null,
-  };
-}
-
-async function sendPhilsms(cfg: SmsConfig, to: string, message: string): Promise<SmsResult> {
-  const recipient = normalizeForProvider(to, "philsms");
-  if (!recipient) return fail("philsms", `Invalid PH number: ${to}`);
-  const isUnicode = /[^\x00-\x7F]/.test(message);
-  let res: Response;
-  try {
-    res = await fetch("https://app.philsms.com/api/v3/sms/send", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${cfg.philsms.token}`,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        recipient,
-        sender_id: cfg.philsms.senderId.slice(0, 11),
-        type: isUnicode ? "unicode" : "plain",
-        message,
-      }),
-    });
-  } catch (e) {
-    return fail("philsms", `network error: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  const text = await res.text();
-  let data: any = null;
-  try { data = JSON.parse(text); } catch { /* keep raw text below */ }
-  if (!res.ok || data?.status === "error") {
-    return fail("philsms", data?.message ?? `HTTP ${res.status}: ${text}`.slice(0, 500), data ?? text);
-  }
-  const id = data?.data?.uid ?? data?.data?.id ?? data?.data?.message_id ?? null;
-  return {
-    ok: true, provider: "philsms",
-    providerMessageId: id != null ? String(id) : null,
-    status: "submitted", raw: data ?? text, error: null,
-  };
-}
-
 async function sendIprog(cfg: SmsConfig, to: string, message: string): Promise<SmsResult> {
   const phone = normalizeForProvider(to, "iprog");
   if (!phone) return fail("iprog", `Invalid PH number: ${to}`);
+  console.log(`sms-provider iprog: sending to=63***${phone.slice(-4)} token=${maskedKey(cfg.iprog.token)} dry_run=${cfg.dryRun} msg_len=${message.length}`);
   let res: Response;
   try {
     res = await fetch("https://sms.iprogtech.com/api/v1/sms_messages", {
@@ -223,25 +105,29 @@ async function sendIprog(cfg: SmsConfig, to: string, message: string): Promise<S
       body: JSON.stringify({ api_token: cfg.iprog.token, phone_number: phone, message }),
     });
   } catch (e) {
-    return fail("iprog", `network error: ${e instanceof Error ? e.message : String(e)}`);
+    const err = `network error: ${e instanceof Error ? e.message : String(e)}`;
+    console.error(`iProg SMS failed: ${err}`);
+    return fail("iprog", err);
   }
   const text = await res.text();
   let data: any = null;
   try { data = JSON.parse(text); } catch { /* keep raw text below */ }
-  console.log(`sms-provider iprog: secret=IPROG_SMS_API_TOKEN dry_run=${cfg.dryRun} http_status=${res.status} json_status=${data?.status ?? "null"} message=${String(data?.message ?? "").slice(0, 200)}`);
+  console.log(`sms-provider iprog: http_status=${res.status} json_status=${data?.status ?? "null"} message_id=${data?.message_id ?? "null"} message=${String(data?.message ?? "").slice(0, 200)}`);
   if (!res.ok) {
-    console.error(`iProg SMS failed: HTTP ${res.status} ${data?.message ?? data?.error ?? text}`.slice(0, 300));
-    return fail("iprog", `HTTP ${res.status}: ${text}`.slice(0, 500), data ?? text);
+    const err = `HTTP ${res.status}: ${String(data?.message ?? data?.error ?? text).slice(0, 300)}`;
+    console.error(`iProg SMS failed: ${err}`);
+    return fail("iprog", err, data ?? text);
   }
   const okStatus = data?.status === 200 || data?.status === "200" || String(data?.status ?? "").toLowerCase() === "success";
   if (!okStatus || data?.error || data?.errors) {
     const msg = String(data?.message ?? data?.error ?? data?.errors ?? "Unknown iProg error").slice(0, 500);
-    console.error(`iProg SMS failed: status ${data?.status ?? res.status} ${msg}`.slice(0, 300));
+    console.error(`iProg SMS failed: status ${data?.status ?? res.status} ${msg}`);
     return fail("iprog", msg, data ?? text);
   }
   if (data?.message_id == null) {
-    console.error(`iProg SMS failed: status ${data?.status ?? res.status} missing message_id`);
-    return fail("iprog", `${data?.message ?? "iProg response missing message_id"}`.slice(0, 500), data ?? text);
+    const msg = `${data?.message ?? "iProg response missing message_id"}`.slice(0, 500);
+    console.error(`iProg SMS failed: ${msg}`);
+    return fail("iprog", msg, data ?? text);
   }
   return {
     ok: true, provider: "iprog",
@@ -250,90 +136,6 @@ async function sendIprog(cfg: SmsConfig, to: string, message: string): Promise<S
   };
 }
 
-/** Numbers contained in a Movider sent/failed list item (string or object). */
-function moviderListNumbers(list: unknown): string[] {
-  if (!Array.isArray(list)) return [];
-  return list.map((item: any) =>
-    normalizeForProvider(
-      typeof item === "string" ? item : item?.number ?? item?.to ?? item?.phone ?? item?.recipient ?? "",
-      "movider"
-    ) ?? String(item?.number ?? item?.to ?? item ?? "")
-  ).filter(Boolean);
-}
-
-function moviderErrorText(data: any): string | null {
-  const err = data?.error;
-  if (!err) return null;
-  if (typeof err === "string") return err;
-  if (typeof err === "object") {
-    return err.name ?? err.message ?? err.code ?? JSON.stringify(err).slice(0, 300);
-  }
-  return String(err);
-}
-
-async function sendMovider(cfg: SmsConfig, to: string, message: string): Promise<SmsResult> {
-  const number = normalizeForProvider(to, "movider");
-  if (!number) return fail("movider", `Invalid PH number: ${to}`);
-  const body = new URLSearchParams({
-    api_key: cfg.movider.apiKey,
-    api_secret: cfg.movider.apiSecret,
-    to: number,
-    text: message,
-    from: cfg.movider.senderName,
-  });
-  let res: Response;
-  try {
-    res = await fetch("https://api.movider.co/v1/sms", {
-      method: "POST",
-      headers: {
-        "Accept": "application/json",
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body,
-    });
-  } catch (e) {
-    return fail("movider", `network error: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  const text = await res.text();
-  let data: any = null;
-  try { data = JSON.parse(text); } catch { /* keep raw text below */ }
-  const errText = moviderErrorText(data);
-  if (!res.ok || errText) {
-    const readable = mapMoviderError(errText, errText ?? `HTTP ${res.status}: ${text}`.slice(0, 500));
-    const hint = /auth/i.test(readable) || res.status === 401 ? ` — ${AUTH_HINT}` : "";
-    // Keep the original Movider code visible for diagnosis: "CODE: readable".
-    const shown = errText && !readable.includes(errText) ? `${errText}: ${readable}` : readable;
-    return fail("movider", `${shown}${hint}`, data ?? text);
-  }
-  // Success = the number appears in the sent list; failed = in the failed list.
-  const payload = data?.data && typeof data.data === "object" ? data.data : data;
-  const sentNumbers = moviderListNumbers(
-    payload?.phone_number_list ?? payload?.sended_number_list ?? payload?.sent_list ?? payload?.sent ?? payload?.data?.phone_number_list
-  );
-  const failedNumbers = moviderListNumbers(
-    payload?.bad_phone_number_list ?? payload?.failed_number_list ?? payload?.failed_list ?? payload?.failed ?? payload?.data?.bad_phone_number_list
-  );
-  const id = payload?.message_id ?? payload?.id ?? null;
-  if (failedNumbers.includes(number) || (failedNumbers.length > 0 && !sentNumbers.includes(number))) {
-    return fail("movider", `Number appears in the failed list`, data ?? text);
-  }
-  if (sentNumbers.length > 0 && !sentNumbers.includes(number)) {
-    return fail("movider", `Number not in the sent list`, data ?? text);
-  }
-  // No lists returned at all but no error either: treat empty-sent + empty-failed
-  // on a 2xx as accepted only when a total/message id is present.
-  if (sentNumbers.length === 0 && failedNumbers.length === 0 && payload?.total_sms == null && id == null) {
-    return fail("movider", `Unexpected Movider response`, data ?? text);
-  }
-  return {
-    ok: true, provider: "movider",
-    providerMessageId: id != null ? String(id) : null,
-    status: "submitted", raw: data ?? text, error: null,
-  };
-}
-
-/** The single send entry point. `to` may be in any PH format; it is
- *  normalized to the selected provider's required format internally. */
 export async function sendSms(opts: { to: string; message: string }, ignoreDryRun = false): Promise<SmsResult> {
   const cfg = getSmsConfig();
   if (cfg.dryRun && !ignoreDryRun) {
@@ -343,24 +145,22 @@ export async function sendSms(opts: { to: string; message: string }, ignoreDryRu
     };
   }
   if (cfg.missing.length) {
-    const msg = `SMS_PROVIDER=${cfg.provider} missing secret(s): ${cfg.missing.join(", ")}`;
+    const msg = `SMS provider ${cfg.providerLabel} missing secret(s): ${cfg.missing.join(", ")}`;
+    console.error(msg);
     return fail(cfg.provider, msg);
   }
-  switch (cfg.provider) {
-    case "iprog": return sendIprog(cfg, opts.to, opts.message);
-    default: return sendIprog(cfg, opts.to, opts.message);
-  }
+  // Reuse existing iProgSMS code path.
+  return sendIprog(cfg, opts.to, opts.message);
 }
 
 export const AUTH_HINT =
-  "Check the provider API key/secret secrets (full, unmasked values), then redeploy: supabase functions deploy send-sms";
+  "Set IPROG_SMS_API_TOKEN (full unmasked value) in Supabase Edge Function secrets, then redeploy: supabase functions deploy air-alerts send-sms";
 
-/** Map iProg error codes/names to operator-readable messages. Unknown codes pass through unchanged. */
 export function mapIprogError(errName: string | null | undefined, fallback?: string): string {
   const code = String(errName ?? "").toUpperCase();
   if (!code) return fallback ?? "iProg request failed";
   if (["ERR_AUTHENTICATION_FAILED", "ERR_INVALID_APIKEY", "ERR_INVALID_APISECRET", "ERR_INVALID_API_KEY_SECRET", "ERR_OFTEN_WRONG_APIKEY"].includes(code)) {
-    return "iProg rejected the API key or secret. Generate a new key and copy it with the Copy button.";
+    return "iProg rejected the API token. Check IPROG_SMS_API_TOKEN (full unmasked value) and redeploy.";
   }
   if (["ERR_INSUFFICIENT_BALANCE", "ERR_BALANCE_EXPIRED"].includes(code)) {
     return "iProg balance is insufficient or expired. Top up your iProg account.";
@@ -369,101 +169,34 @@ export function mapIprogError(errName: string | null | undefined, fallback?: str
     return "iProg rejected the sender configuration.";
   }
   if (["ERR_INVALID_TO", "ERR_INVALID_RECEIVER_NUMBER", "ERR_INVALID_TEXT", "ERR_INVALID_SENDMSG_FORM"].includes(code)) {
-    return "iProg rejected the phone number or message. Check the number format (09XXXXXXXXX) and that the message is not empty.";
+    return "iProg rejected the phone number or message. Check number format (09XXXXXXXXX / 639XXXXXXXXX) and message.";
   }
   if (code === "ERR_IP_WHITELIST_NOT_ALLOWED" || code === "ERR_IP_WHITELIST_FAILURE") {
-    return "iProg unreachable. Check your network connectivity.";
+    return "iProg request blocked by IP/network policy.";
   }
   return fallback ?? code;
 }
 
-/** Credit balance for the selected provider, or null when the provider does
- *  not expose one / the call fails (callers treat null as "unknown", never
- *  as 0, so an unsupported balance endpoint cannot block sending).
- * `authError` is set when the balance call itself proves the credentials are
- * wrong (HTTP 401 / ERR_AUTHENTICATION_FAILED), so the UI can tell the
- * Administrator to fix the secrets instead of showing a raw error code. */
 export async function getSmsCredits(ignoreDryRun = false): Promise<{ credits: number | null; tokenValid: boolean; provider: SmsProviderName; providerLabel: string; authError: string | null }> {
   const cfg = getSmsConfig();
-  const base = { credits: null, tokenValid: false, provider: cfg.provider, providerLabel: cfg.providerLabel, authError: null as string | null };
+  const base = { credits: null as number | null, tokenValid: false, provider: cfg.provider, providerLabel: cfg.providerLabel, authError: null as string | null };
   if (cfg.dryRun && !ignoreDryRun) return base;
-  if (cfg.missing.length) return base;
-   try {
-    let parsedCache: any = null;
-    // helper: a 401 (or an ERR_AUTHENTICATION_FAILED body) proves bad credentials.
-    const authCheck = async (res: Response): Promise<string | null> => {
-      if (res.status === 401) return `HTTP 401 authentication failed`;
-      const bodyText = await res.text().catch(() => "");
-      const parsed: any = (() => { try { return JSON.parse(bodyText); } catch { return null; } })();
-      parsedCache = parsed;
-      // iProg reports an invalid token as { status: 500, message: "Invalid Token" }.
-      const msg = String(parsed?.message ?? parsed?.error ?? bodyText ?? "");
-      if (/invalid token/i.test(msg)) return msg.slice(0, 200);
-      if (res.ok) return null;
-      const err = mapIprogError(parsed?.error ?? parsed?.message ?? null) ?? parsed?.message ?? bodyText;
-      return /auth/i.test(String(err ?? "")) ? String(err).slice(0, 200) : null;
-    };
-
-    if (cfg.provider === "semaphore") {
-      const res = await fetch(`https://api.semaphore.co/api/v4/account?apikey=${encodeURIComponent(cfg.semaphore.apiKey)}`);
-      const authError = await authCheck(res);
-      if (!res.ok) return { ...base, tokenValid: false, authError };
-      if (parsedCache?.status === 500 && /invalid token/i.test(String(parsedCache?.message ?? ""))) {
-        return { ...base, tokenValid: false, authError: String(parsedCache.message).slice(0, 200) };
-      }
-      const data: any = parsedCache;
-      const credits = Number(data?.credit_balance);
-      return { ...base, tokenValid: true, credits: Number.isFinite(credits) ? credits : null };
-    }
-    if (cfg.provider === "philsms") {
-      const res = await fetch("https://app.philsms.com/api/v3/balance", {
-        headers: { "Authorization": `Bearer ${cfg.philsms.token}`, "Accept": "application/json" },
-      });
-      const authError = await authCheck(res);
-      if (!res.ok) return { ...base, tokenValid: false, authError };
-      const data: any = parsedCache;
-      return { ...base, tokenValid: true, credits: findCredits(data) };
-    }
+  if (cfg.missing.length) return { ...base, authError: `Missing secret(s): ${cfg.missing.join(", ")}` };
+  try {
     const res = await fetch(`https://sms.iprogtech.com/api/v1/account/sms_credits?api_token=${encodeURIComponent(cfg.iprog.token)}`);
-    const authError = await authCheck(res);
-    if (authError) return { ...base, tokenValid: false, authError };
-    if (!res.ok) return { ...base, tokenValid: false, authError };
-    const data: any = parsedCache;
-    // iProg invalid token: { status: 500, message: "Invalid Token" } (may be HTTP 200).
-    if (data?.status === 500 && /invalid token/i.test(String(data?.message ?? ""))) {
-      return { ...base, tokenValid: false, authError: String(data.message).slice(0, 200) };
-    }
-    if (/invalid token/i.test(String(data?.message ?? ""))) {
-      return { ...base, tokenValid: false, authError: String(data.message).slice(0, 200) };
+    const bodyText = await res.text().catch(() => "");
+    let data: any = null;
+    try { data = JSON.parse(bodyText); } catch { data = null; }
+    console.log(`sms-provider iprog credits: http_status=${res.status} json_status=${data?.status ?? "null"} message=${String(data?.message ?? "").slice(0, 120)}`);
+    if (!res.ok) return { ...base, authError: `HTTP ${res.status}` };
+    const msg = String(data?.message ?? "");
+    if (/invalid token/i.test(msg) || (data?.status === 500 && /invalid/i.test(msg))) {
+      return { ...base, authError: msg || "Invalid Token" };
     }
     const credits = Number(data?.data?.load_balance ?? data?.credits);
-    const tokenValid = data?.status === "success" || data?.status === 200;
+    const tokenValid = data?.status === "success" || data?.status === 200 || res.ok;
     return { ...base, tokenValid, credits: Number.isFinite(credits) ? credits : null };
-  } catch {
-    return base;
+  } catch (e) {
+    return { ...base, authError: e instanceof Error ? e.message : String(e) };
   }
-}
-
-/** PhilSMS /balance returns "sms unit with all details" without a documented
- *  field name; search typical balance-like numeric keys recursively. */
-function findCredits(value: unknown, depth = 0): number | null {
-  if (depth > 4 || value == null) return null;
-  if (typeof value === "number" || typeof value === "string") {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : null;
-  }
-  if (typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    for (const key of ["credit_balance", "balance", "remaining", "remaining_credits", "credits", "sms_unit", "units", "total_remaining", "load_balance"]) {
-      if (key in obj) {
-        const found = findCredits(obj[key], depth + 1);
-        if (found !== null) return found;
-      }
-    }
-    for (const v of Object.values(obj)) {
-      const found = findCredits(v, depth + 1);
-      if (found !== null) return found;
-    }
-  }
-  return null;
 }

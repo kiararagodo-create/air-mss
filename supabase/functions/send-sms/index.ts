@@ -1,38 +1,6 @@
-/**
- * send-sms — manual SMS sending (B). verify_jwt: ON (default).
- *
- * This is the ONLY path by which a browser-triggered SMS is sent. Provider
- * credentials live in Edge Function secrets and never reach the browser.
- * No SMS is sent automatically from page load or any other browser code.
- *
- * Sending is provider-pluggable via supabase/functions/_shared/sms-provider.ts:
- *   SMS_PROVIDER=semaphore (default) -> SEMAPHORE_API_KEY [+ SEMAPHORE_SENDER_NAME]
- *   SMS_PROVIDER=philsms             -> PHILSMS_API_TOKEN [+ PHILSMS_SENDER_ID]
- *   SMS_PROVIDER=iprog               -> IPROG_API_TOKEN (alias IPROG_SMS_API_TOKEN)
- *   DRY_RUN=true                     -> log + report success, no provider call.
- *
- * Body variants:
- *   { action: "credits" }
- *     -> { credits, provider, providerLabel } (credits null = unknown; sending
- *        is never blocked on an unknown balance, only on a known 0).
- *   { action: "send", notification_id?, live?, recipient_ids: [uuid],
- *     message, send_anyway? }
- *     -> caller must be admin or security. Recipient names/numbers are
- *        re-fetched server-side from profiles (client numbers are ignored).
- *        Cooldown: an sms_logs row for the same notification in the last
- *        30 minutes blocks the send unless send_anyway is true AND the
- *        caller is admin -> returns { cooldown: true, last_sent_at }.
- *        Credits: known 0 blocks; below the recipient count only warns
- *        (credits_warning, shown to the Administrator in-app).
- *        Per recipient: normalize PH number to the provider's format,
- *        create a 24h action_token recipient row (when tied to an alert),
- *        append "Take action: <APP_PUBLIC_URL>/action/<token>", call the
- *        provider adapter, and insert one sms_logs row with provider name,
- *        provider_message_id, provider_status and the raw provider response
- *        (submitted / failed / skipped_no_number). One failure never stops
- *        the others. A notification_actions row action='sms_sent'
- *        ("SMS sent by [sender] to N personnel") is recorded on the
- *        alert timeline.
+﻿/**
+ * send-sms — manual SMS sending. verify_jwt: ON (default).
+ * Provider credentials stay server-side. Manual sends are marked as manual in sms_logs.
  */
 import { createClient } from "https://esm.sh/v135/@supabase/supabase-js@2.45.4?target=deno&standalone";
 import { maskPhone, newActionToken } from "../_shared/air_alerts.ts";
@@ -46,6 +14,17 @@ const corsHeaders = {
 };
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+}
+
+async function insertSmsLog(admin: any, row: any) {
+  const payload = { ...row, send_mode: "manual", is_auto: false };
+  const { error } = await admin.from("sms_logs").insert(payload);
+  if (error) {
+    const fallback = { ...payload };
+    delete fallback.send_mode;
+    delete fallback.is_auto;
+    await admin.from("sms_logs").insert(fallback);
+  }
 }
 
 const SMS_ROLES = ["admin", "security"];
@@ -76,8 +55,6 @@ Deno.serve(async (req) => {
     return json({ credits, auth_error: authError, provider: cfg.provider, providerLabel: cfg.providerLabel, dry_run: false });
   }
 
-  // Admin-only connection test: hits ONLY the provider balance endpoint.
-  // No SMS is sent, no sms_logs row is written.
   if (body?.action === "test" || body?.action === "check") {
     if (profile.role !== "admin") {
       return json({ tokenValid: false, creditsLeft: null, error: "Only an Administrator can test the SMS connection" }, 403);
@@ -86,10 +63,7 @@ Deno.serve(async (req) => {
       return json({ tokenValid: false, creditsLeft: null, error: `SMS provider ${cfg.providerLabel} missing secret(s): ${cfg.missing.join(", ")}` });
     }
     const { credits, tokenValid, authError } = await getSmsCredits(true);
-    console.log(`send-sms check-connection: tokenValid=${tokenValid} creditsLeft=${credits}`);
-    if (authError) {
-      return json({ tokenValid: false, creditsLeft: credits, error: authError });
-    }
+    if (authError) return json({ tokenValid: false, creditsLeft: credits, error: authError });
     return json({ tokenValid, creditsLeft: credits, error: null });
   }
 
@@ -97,7 +71,7 @@ Deno.serve(async (req) => {
   if (!SMS_ROLES.includes(profile.role)) {
     return json({ ok: false, error: "Only Administrator and Security can send SMS", results: [] }, 403);
   }
-  if (cfg.missing.length && !cfg.dryRun) {
+  if (cfg.missing.length) {
     return json({ ok: false, error: `SMS provider ${cfg.providerLabel} missing secret(s): ${cfg.missing.join(", ")}`, provider: cfg.provider, results: [] }, 500);
   }
 
@@ -105,39 +79,41 @@ Deno.serve(async (req) => {
   const message: string = String(body.message ?? "").trim();
   if (recipientIds.length === 0) return json({ ok: false, error: "Select at least one recipient", results: [] }, 400);
   if (!message) return json({ ok: false, error: "Message is empty", results: [] }, 400);
-  console.log(`send-sms request: secret=IPROG_SMS_API_TOKEN dry_run=${cfg.dryRun} recipients=${recipientIds.length}`);
 
-  // Recipients are re-fetched server-side; client-sent numbers are ignored.
-  const { data: people } = await admin.from("profiles")
-    .select("id, name, role, contact_number")
+  const recipientQuery = `select id,name,role,contact_number,account_status from public.profiles where id in (...) and is_active=true`;
+  const { data: people, error: peopleError } = await admin.from("profiles")
+    .select("id, name, role, contact_number, account_status")
     .in("id", recipientIds)
     .eq("is_active", true);
-  const recipients = ((people as any[]) ?? []).filter((p) => p.role === "admin" || p.account_status === "approved" || p.role === "admin");
+  if (peopleError) {
+    console.error(`[send-sms] DB query failed: ${recipientQuery} :: ${peopleError.message}`, peopleError);
+    return json({ ok: false, error: `Database error loading recipients: ${recipientQuery} :: ${peopleError.message}`, results: [] }, 500);
+  }
+  const recipients = ((people as any[]) ?? []).filter((p) => p.role === "admin" || p.account_status === "approved");
 
-  // Alert context (optional for custom SMS): ensure the row exists first.
   let notification: any = null;
   if (body.notification_id || body.live) {
     const resolved = await resolveNotification(admin, body.notification_id ?? null, body.live ?? null);
     notification = resolved?.notification ?? null;
   }
 
-  // Cooldown (per alert): an SMS in the last 30 minutes blocks re-send,
-  // unless an Administrator confirms "Send anyway".
   if (notification) {
     const cutoff = new Date(Date.now() - COOLDOWN_MS).toISOString();
-    const { data: recent } = await admin.from("sms_logs")
+    const cooldownQuery = `select sent_at from public.sms_logs where notification_id=${notification.id} and sent_at>='${cutoff}' order by sent_at desc limit 1`;
+    const { data: recent, error: recentErr } = await admin.from("sms_logs")
       .select("sent_at").eq("notification_id", notification.id)
       .gte("sent_at", cutoff).order("sent_at", { ascending: false }).limit(1).maybeSingle();
+    if (recentErr) {
+      console.error(`[send-sms] DB query failed: ${cooldownQuery} :: ${recentErr.message}`, recentErr);
+      return json({ ok: false, error: `Database error checking cooldown: ${cooldownQuery} :: ${recentErr.message}`, results: [] }, 500);
+    }
     if (recent && !(body.send_anyway === true && profile.role === "admin")) {
-      const { credits } = await getSmsCredits();
+      const { credits } = await getSmsCredits(true);
       return json({ ok: false, cooldown: true, last_sent_at: recent.sent_at, credits, provider: cfg.provider, providerLabel: cfg.providerLabel, results: [] });
     }
   }
 
   const { credits, authError } = await getSmsCredits(true);
-  // Credentials proven wrong by the balance call: stop before burning a
-  // per-recipient attempt on every recipient (and log none as "failed"
-  // without the real reason).
   if (authError) {
     return json({
       ok: false,
@@ -156,7 +132,7 @@ Deno.serve(async (req) => {
   for (const p of recipients) {
     const phone = normalizeForProvider(p.contact_number, cfg.provider);
     if (!phone) {
-      await admin.from("sms_logs").insert({
+      await insertSmsLog(admin, {
         notification_id: notification?.id ?? null, personnel_id: p.id,
         recipient_name: p.name ?? "", recipient_role: p.role,
         phone: p.contact_number ?? null, message,
@@ -189,12 +165,8 @@ Deno.serve(async (req) => {
     finalMessage = finalMessage.slice(0, 160);
 
     const res = await sendSms({ to: phone, message: finalMessage }, true);
-    if (!res.ok) {
-      console.error(`iProg SMS failed: ${res.status} ${res.error ?? ""}`.slice(0, 300));
-    }
-    console.log(`send-sms recipient: ${maskPhone(phone)} ${res.ok ? "ok" : "failed"} ${res.error ?? ""}`.slice(0, 300));
     const rawText = typeof res.raw === "string" ? res.raw : JSON.stringify(res.raw ?? {});
-    await admin.from("sms_logs").insert({
+    await insertSmsLog(admin, {
       notification_id: notification?.id ?? null, personnel_id: p.id,
       recipient_name: p.name ?? "", recipient_role: p.role, phone,
       message: finalMessage,
@@ -209,13 +181,12 @@ Deno.serve(async (req) => {
     });
   }
 
-  // Timeline: "SMS sent by [sender] to N personnel".
   if (notification) {
     await admin.from("notification_actions").insert({
       notification_id: notification.id, personnel_id: profile.id,
       personnel_name: profile.name, personnel_role: profile.role,
       action: "sms_sent",
-      note: `SMS sent by ${profile.name} to ${recipients.length} personnel via ${cfg.providerLabel}`,
+      note: `SMS sent by ${profile.name} to ${recipients.length} personnel via ${cfg.providerLabel} (manual)`,
       taken_at: new Date().toISOString(),
     });
   }

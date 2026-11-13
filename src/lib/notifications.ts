@@ -1,11 +1,6 @@
-// src/lib/notifications.ts
-//
-// Types + helpers for sensor-driven air_notifications. The existing
-// public.notifications mailbox keeps its own `Notification` type in
-// NotificationContext; this module is for the NEW sensor alerts so the two
-// lifecycles never get mixed in one type.
-
+﻿// src/lib/notifications.ts
 import type { Tone } from "../ui";
+import { isSensorFaultValue, formatMetricDisplay } from "./sensorRanges";
 
 export type AirSeverity = "info" | "warning" | "high" | "danger" | "critical";
 export type AirStatus = "open" | "acknowledged" | "resolved";
@@ -27,7 +22,6 @@ export interface AirNotification {
   handled_by_name: string | null;
   handled_by_role: string | null;
   handled_at: string | null;
-  /** Latest personnel action verb, e.g. "on_my_way" (not a DB column; joined client-side). */
   handled_action?: string | null;
   escalation_of: number | null;
   resolution_note: string | null;
@@ -43,12 +37,14 @@ export interface SmsLog {
   recipient_role: string;
   phone: string | null;
   message: string;
-  status: "submitted" | "in_progress" | "failed" | "skipped_no_number";
+  status: "submitted" | "in_progress" | "failed" | "skipped_no_number" | "skipped_quality" | "skipped_rate_limited" | "skipped_low_credits" | "skipped_open_incident" | "skipped_dry_run" | "skipped_no_recipients" | "skipped_acknowledged" | "skipped_disabled" | "invalid_number";
   provider_response: string | null;
   provider: string | null;
   provider_message_id: string | null;
   provider_status: string | null;
   sent_at: string;
+  send_mode?: "auto" | "manual" | null;
+  is_auto?: boolean | null;
 }
 
 export type AlertAction = "acknowledge" | "on_my_way" | "resolved" | "false_alarm" | "repaired" | "sms_sent";
@@ -73,7 +69,6 @@ export const ACTION_LABEL: Record<AlertAction, string> = {
   sms_sent: "SMS sent",
 };
 
-/** "On my way - Hirro Suniga (Maintenance), 2:41 PM" / "No action yet". */
 export function handledByLine(n: {
   handled_by_name: string | null; handled_by_role: string | null;
   handled_at: string | null; handled_action?: string | null; status: string;
@@ -81,7 +76,6 @@ export function handledByLine(n: {
 }): { text: string; unhandled: boolean } {
   if (!n.handled_by_name) {
     const unhandled = (n.severity === "danger" || n.severity === "critical") && unhandledMinutes(
-      // unhandledMinutes expects an AirNotification-shaped object.
       { status: n.status, severity: n.severity, created_at: n.created_at } as AirNotification, 10);
     return { text: "No action yet", unhandled };
   }
@@ -109,12 +103,21 @@ export const SENSOR_LABEL: Record<SensorType, string> = {
 };
 
 export function formatReading(n: AirNotification): string {
+  if (n.sensor_type === "device") return n.reading_value == null ? "—" : String(n.reading_value);
+  if (n.sensor_type === "temp" || n.sensor_type === "humidity" || n.sensor_type === "co2" || n.sensor_type === "lpg") {
+    if (n.reading_value == null) return "—";
+    if (isSensorFaultValue(n.sensor_type, n.reading_value)) return "Sensor error";
+    const s = formatMetricDisplay(n.sensor_type, n.reading_value);
+    if (s !== "—") return s;
+  }
   if (n.reading_value == null && !n.reading_unit) return "—";
-  const v = n.sensor_type === "temp" && n.reading_value != null ? n.reading_value.toFixed(1) : n.reading_value != null ? String(Math.round(n.reading_value)) : "—";
+  if (n.reading_value != null && !Number.isFinite(n.reading_value)) return "Sensor error";
+  const v = n.sensor_type === "temp" && n.reading_value != null
+    ? n.reading_value.toFixed(1)
+    : n.reading_value != null ? String(Math.round(n.reading_value)) : "—";
   return n.reading_unit ? `${v} ${n.reading_unit}` : v;
 }
 
-/** "2m ago", "3h ago" — Asia/Manila date. */
 export function relativeTime(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
   if (!Number.isFinite(ms) || ms < 0) return "now";
@@ -136,15 +139,10 @@ export function manilaTime(iso: string): string {
 
 export function maskPhone(raw: string | null | undefined): string {
   const d = (raw ?? "").replace(/\D/g, "");
-  if (d.length < 4) return "•".repeat(d.length);
-  return "••••" + d.slice(-3);
+  if (d.length < 4) return "•".repeat(Math.max(0, d.length));
+  return "••••" + d.slice(-4);
 }
 
-/**
- * Recommended action plan — reuses the dashboard's actionMessage() text
- * (src/data/Data.ts) so the Notifications page and the SMS link page always
- * show the same guidance as the Dashboard.
- */
 import { actionMessage, type Room } from "../data/Data";
 import type { Thresholds } from "../data/Data";
 
@@ -163,7 +161,6 @@ export function actionPlanFor(n: AirNotification, thresholds: Thresholds): { tit
   return actionMessage(room, thresholds);
 }
 
-/** Danger/Critical unhandled for > N minutes (default 15) -> warning style. */
 export function unhandledMinutes(n: AirNotification, thresholdMin = 15): boolean {
   if (n.status !== "open") return false;
   if (n.severity !== "danger" && n.severity !== "critical") return false;

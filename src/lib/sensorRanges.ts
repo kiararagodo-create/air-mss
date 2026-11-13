@@ -1,7 +1,7 @@
-// Single source of truth for the physical validity ranges used by the
-// Reports page, the day-view PDF and the monthly PDF. Stored readings are
-// never modified; values outside these ranges are simply ignored when
-// computing statistics.
+﻿// Single source of truth for sensor validity/fault rules used in UI and reports.
+// Task 2: reject/flag NaN, negative, or beyond physical range.
+// Physical ranges: LPG > 10000 ppm invalid, CO2 > 10000 ppm invalid, DHT22 temp outside -40..80 C,
+// humidity outside 0-100%. If temp and humidity are both exactly 0, treat as likely sensor fault/disconnect.
 
 export const SENSOR_RANGES = {
   co2: { min: 0, max: 10000 },
@@ -10,9 +10,7 @@ export const SENSOR_RANGES = {
   humidity: { min: 0, max: 100 },
 } as const;
 
-// Plausible-range for summary statistics: values outside this range are
-// excluded from min/max/avg and labelled "Sensor fault", but remain in the
-// table and are still counted in the day total. 0 is a valid LPG reading.
+// Plausible ranges kept for reporting/statistics compatibility with existing codebase.
 export const PLausIBLE_RANGES = {
   co2: { min: 300, max: 10000 },
   lpg: { min: 0, max: 10000 },
@@ -22,25 +20,44 @@ export const PLausIBLE_RANGES = {
 
 export type MetricKey = "co2" | "lpg" | "temp" | "humidity";
 
-export function inRange(metric: MetricKey, value: number | null | undefined): boolean {
-  if (value === null || value === undefined || !Number.isFinite(value)) return false;
-  const r = SENSOR_RANGES[metric];
-  return value >= r.min && value <= r.max;
+export function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
-// A DHT22 reporting exactly 0.0 C and 0.0 % is a suspected sensor fault,
-// not a real reading. Excluded from temperature and humidity statistics only.
-export function isDhtFault(temp: number | null | undefined, humidity: number | null | undefined): boolean {
-  return temp === 0 && humidity === 0;
-}
-
-// A row where all four sensors read exactly zero is a failed read, so none of
-// its values are usable. Mirrors report_metric_is_valid() in SQL.
 export function isAllZero(row: { co2?: number | null; lpg?: number | null; temp?: number | null; humidity?: number | null }): boolean {
   return row.co2 === 0 && row.lpg === 0 && row.temp === 0 && row.humidity === 0;
 }
 
-// NULL is not a usable sensor value. Mirrors report_reading_is_invalid() in SQL.
+export function isDhtFault(temp: number | null | undefined, humidity: number | null | undefined): boolean {
+  return temp === 0 && humidity === 0;
+}
+
+export function isSensorFaultValue(
+  metric: MetricKey,
+  value: number | null | undefined,
+  ctx?: { temp?: number | null; humidity?: number | null; co2?: number | null; lpg?: number | null }
+): boolean {
+  if (value === null || value === undefined) return false; // missing, not a garbage numeric fault
+  if (!isFiniteNumber(value)) return true;
+  if (ctx && isAllZero({ co2: ctx.co2 ?? null, lpg: ctx.lpg ?? null, temp: ctx.temp ?? null, humidity: ctx.humidity ?? null })) return true;
+
+  const r = SENSOR_RANGES[metric];
+  if (value < r.min || value > r.max) return true;
+
+  if (metric === "temp" || metric === "humidity") {
+    const t = metric === "temp" ? value : (ctx?.temp ?? null);
+    const h = metric === "humidity" ? value : (ctx?.humidity ?? null);
+    if (isDhtFault(t, h)) return true;
+  }
+  return false;
+}
+
+export function inRange(metric: MetricKey, value: number | null | undefined): boolean {
+  if (!isFiniteNumber(value)) return false;
+  const r = SENSOR_RANGES[metric];
+  return value >= r.min && value <= r.max;
+}
+
 export function isMissing(row: { co2?: number | null; lpg?: number | null; temp?: number | null; humidity?: number | null }): boolean {
   return row.co2 == null || row.lpg == null || row.temp == null || row.humidity == null;
 }
@@ -62,8 +79,9 @@ export function metricValid(
   value: number | null | undefined,
   row?: { co2?: number | null; lpg?: number | null; temp?: number | null; humidity?: number | null }
 ): boolean {
-  if (value === null || value === undefined || !Number.isFinite(value)) return false;
+  if (!isFiniteNumber(value)) return false;
   if (row && isAllZero(row)) return false;
+  if (isSensorFaultValue(metric, value, row ?? undefined)) return false;
   if (metric === "co2") return inRange("co2", value);
   if (metric === "lpg") return inRange("lpg", value);
   if (metric === "temp") return tempValid(value, row?.humidity);
@@ -71,9 +89,6 @@ export function metricValid(
   return false;
 }
 
-// A reading is a sensor fault when any value is outside the plausible range,
-// all sensors are missing, or all read exactly zero. Mirrors
-// report_reading_is_invalid() in SQL.
 export function isSensorFault(row: { co2?: number | null; lpg?: number | null; temp?: number | null; humidity?: number | null }): boolean {
   if (isMissing(row)) return true;
   if (isAllZero(row)) return true;
@@ -85,17 +100,12 @@ export function isSensorFault(row: { co2?: number | null; lpg?: number | null; t
   return false;
 }
 
-// Check one sensor value against the plausible range only.
 export function plausibleMetricValid(metric: MetricKey, value: number | null | undefined): boolean {
-  if (value === null || value === undefined || !Number.isFinite(value)) return false;
+  if (!isFiniteNumber(value)) return false;
   const r = PLausIBLE_RANGES[metric];
   return value >= r.min && value <= r.max;
 }
 
-// ---------------------------------------------------------------------------
-// Helper: check a row against the plausible range (any metric out of range → true)
-// Used by the day-PDF and panel to flag excluded readings.
-// ---------------------------------------------------------------------------
 export function isReadingPlausible(row: { co2?: number | null; lpg?: number | null; temp?: number | null; humidity?: number | null }): boolean {
   if (isMissing(row)) return false;
   if (isAllZero(row)) return false;
@@ -104,4 +114,17 @@ export function isReadingPlausible(row: { co2?: number | null; lpg?: number | nu
   if (row.temp != null && (row.temp < PLausIBLE_RANGES.temp.min || row.temp > PLausIBLE_RANGES.temp.max)) return false;
   if (row.humidity != null && (row.humidity < PLausIBLE_RANGES.humidity.min || row.humidity > PLausIBLE_RANGES.humidity.max)) return false;
   return !isDhtFault(row.temp, row.humidity);
+}
+
+export function formatMetricDisplay(
+  metric: MetricKey,
+  value: number | null | undefined,
+  ctx?: { temp?: number | null; humidity?: number | null; co2?: number | null; lpg?: number | null }
+): string {
+  if (value === null || value === undefined) return "—";
+  if (isSensorFaultValue(metric, value, ctx)) return "Sensor error";
+  if (!isFiniteNumber(value)) return "Sensor error";
+  if (metric === "temp") return `${value.toFixed(1)} °C`;
+  if (metric === "humidity") return `${Math.round(value)} %RH`;
+  return `${Math.round(value)} ppm`;
 }

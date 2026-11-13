@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Bell, CheckCheck, FileBarChart2, Loader2, X, BellRing, Volume2, VolumeX,
@@ -13,20 +13,6 @@ import {
 import AlertActionBar from "./AlertActionBar";
 import { Badge } from "../ui";
 
-/**
- * In-app notification bell.
- *
- * Shows sensor alerts (air_notifications, latest ~10) on top, then the
- * account mailbox (public.notifications: approval / report_ready) below so
- * the "monthly report ready" announcement is not lost.
- *
- * Positioning FIX for the old clipped dropdown: the old code anchored the
- * dropdown with `absolute right-0` inside the top-left sidebar header, so
- * its 320px width overflowed 80px off the left edge of small desktop
- * windows. This version positions the dropdown `fixed` relative to the
- * button's viewport rect (clamped to the viewport), so it can never be
- * clipped on either edge, desktop or mobile.
- */
 export default function NotificationBell() {
   const {
     notifications, loading, markRead, markAllRead,
@@ -42,14 +28,8 @@ export default function NotificationBell() {
   const btnRef = useRef<HTMLButtonElement>(null);
   const navigate = useNavigate();
 
-  // Only server alerts actually ring (the alarm provider reads `alerts`),
-  // so the mute-all control only matters while one of them is open.
   const openAlertCount = alerts.filter((a) => a.status === "open").length;
 
-  // The bell lives in the LEFT sidebar (and, on mobile, the top bar), so the
-  // panel must be anchored by its LEFT edge, clamped into the viewport. The
-  // previous `right:` anchoring pushed a 360px panel ~1.5k px off the left
-  // edge on desktop — clicking the bell appeared to do nothing.
   function place() {
     const el = btnRef.current;
     if (!el) return;
@@ -115,11 +95,7 @@ export default function NotificationBell() {
 
       {open && (
         <>
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setOpen(false)}
-            aria-hidden="true"
-          />
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden="true" />
           <div
             className="fixed w-[min(360px,92vw)] rounded-xl border border-slate-200 bg-white shadow-xl z-50 overflow-hidden"
             style={{ top: pos.top, left: pos.left }}
@@ -133,10 +109,7 @@ export default function NotificationBell() {
                   Notifications
                 </span>
                 {totalUnread > 0 && (
-                  <button
-                    onClick={onMarkAll}
-                    className="text-[11px] font-medium text-teal-700 hover:text-teal-800 flex items-center gap-1"
-                  >
+                  <button onClick={onMarkAll} className="text-[11px] font-medium text-teal-700 hover:text-teal-800 flex items-center gap-1">
                     <CheckCheck className="w-3 h-3" />
                     Mark all as read
                   </button>
@@ -151,9 +124,7 @@ export default function NotificationBell() {
                     aria-pressed={muteAllActive}
                     className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-[11px] font-medium text-slate-600 hover:bg-slate-50"
                   >
-                    {muteAllActive
-                      ? <VolumeX className="w-3.5 h-3.5" aria-hidden="true" />
-                      : <Volume2 className="w-3.5 h-3.5" aria-hidden="true" />}
+                    {muteAllActive ? <VolumeX className="w-3.5 h-3.5" aria-hidden="true" /> : <Volume2 className="w-3.5 h-3.5" aria-hidden="true" />}
                     {muteAllActive ? "Unmute all" : `Mute all for ${MUTE_SNOOZE_MINUTES} minutes`}
                   </button>
                 </div>
@@ -167,9 +138,7 @@ export default function NotificationBell() {
                   Loading…
                 </div>
               ) : alerts.length === 0 && liveAlerts.length === 0 && notifications.length === 0 ? (
-                <div className="px-4 py-8 text-center text-slate-400 text-sm">
-                  No notifications yet.
-                </div>
+                <div className="px-4 py-8 text-center text-slate-400 text-sm">No notifications yet.</div>
               ) : (
                 <>
                   {liveAlerts.length > 0 && (
@@ -189,6 +158,7 @@ export default function NotificationBell() {
                         handled_at: a.handled_at, handled_action: a.handled_action,
                         stillPresent: a.stillPresent,
                         created_at: a.created_at, isRead: false,
+                        saturationNote: (a as any).saturationNote,
                       }}
                       liveRef={{ live: { device_id: a.device_id, room_name: a.room_name, floor: a.floor, sensor_type: a.sensor_type, level_label: a.level_label, severity: a.severity, reading_value: a.reading_value, reading_unit: a.reading_unit, message: a.message } }}
                       onClick={() => gotoLive(a.device_id)}
@@ -196,9 +166,7 @@ export default function NotificationBell() {
                     />
                   ))}
                   {alerts.length > 0 && (
-                    <div className="px-4 pt-2 pb-1 text-[10px] font-bold tracking-wide text-slate-400 uppercase">
-                      Sensor alerts
-                    </div>
+                    <div className="px-4 pt-2 pb-1 text-[10px] font-bold tracking-wide text-slate-400 uppercase">Sensor alerts</div>
                   )}
                   {alerts.map((a) => (
                     <AlertRow
@@ -211,9 +179,7 @@ export default function NotificationBell() {
                   ))}
                   {recentActions.length > 0 && (
                     <>
-                      <div className="px-4 pt-2 pb-1 text-[10px] font-bold tracking-wide text-slate-400 uppercase">
-                        Recent actions
-                      </div>
+                      <div className="px-4 pt-2 pb-1 text-[10px] font-bold tracking-wide text-slate-400 uppercase">Recent actions</div>
                       {recentActions.slice(0, 3).map((act) => {
                         const target = alerts.find((x) => x.id === act.notification_id);
                         const label = ACTION_LABEL[(act.action as import("../lib/notifications").AlertAction)] ?? act.action.replace("_", " ");
@@ -228,9 +194,7 @@ export default function NotificationBell() {
                     </>
                   )}
                   {notifications.length > 0 && (
-                    <div className="px-4 pt-2 pb-1 text-[10px] font-bold tracking-wide text-slate-400 uppercase">
-                      Messages
-                    </div>
+                    <div className="px-4 pt-2 pb-1 text-[10px] font-bold tracking-wide text-slate-400 uppercase">Messages</div>
                   )}
                   {notifications.slice(0, 5).map((n) => (
                     <MailboxRow
@@ -265,7 +229,7 @@ interface AlertRowProps {
     reading_unit: string; status: string; handled_by_name: string | null;
     handled_by_role: string | null; handled_at: string | null;
     handled_action?: string | null; stillPresent?: boolean;
-    created_at: string; isRead: boolean;
+    created_at: string; isRead: boolean; saturationNote?: string | null;
   };
   notificationId?: number;
   liveRef?: import("../lib/alertActions").AlertRef;
@@ -279,8 +243,10 @@ function AlertRow({ a, notificationId, liveRef, onClick, onRead }: AlertRowProps
   const tone = SEVERITY_TONE[(a.severity as AirSeverity) || "warning"];
   const isCritical = a.severity === "danger" || a.severity === "critical";
   const sensor = SENSOR_LABEL[(a.sensor_type as SensorType) || "device"] ?? a.sensor_type;
-  const reading = a.reading_value != null ? `${a.sensor_type === "temp" ? a.reading_value.toFixed(1) : Math.round(a.reading_value)} ${a.reading_unit}` : a.level_label === "Offline" ? "no recent reading" : "—";
+  const outOfRange = a.reading_value != null && ((a.sensor_type === "co2" && (a.reading_value < 0 || a.reading_value > 10000)) || (a.sensor_type === "lpg" && (a.reading_value < 0 || a.reading_value > 10000)) || (a.sensor_type === "temp" && (a.reading_value < -40 || a.reading_value > 80)) || (a.sensor_type === "humidity" && (a.reading_value < 0 || a.reading_value > 100)));
+  const reading = outOfRange ? "Sensor error" : a.reading_value != null ? `${a.sensor_type === "temp" ? a.reading_value.toFixed(1) : Math.round(a.reading_value)} ${a.reading_unit}` : a.level_label === "Offline" ? "no recent reading" : "—";
   const handled = handledByLine(a as any);
+  const sat = a.saturationNote ?? ((a.sensor_type === "co2" && a.reading_value != null && a.reading_value >= 5000) ? "At sensor max (5000 ppm)" : null);
 
   return (
     <div
@@ -304,15 +270,12 @@ function AlertRow({ a, notificationId, liveRef, onClick, onRead }: AlertRowProps
             {a.room_name}{a.floor ? ` · ${a.floor}` : ""}
           </p>
         </div>
-        <p className="text-[11px] text-slate-500 mt-0.5">
-          {sensor} · {reading}
-        </p>
+        <p className="text-[11px] text-slate-500 mt-0.5">{sensor} · {reading}</p>
+        {sat && <p className="text-[10px] text-amber-700 mt-0.5">{sat}</p>}
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
           <p className="text-[10px] text-slate-400">{relativeTime(a.created_at)}</p>
           <span className={`text-[10px] font-medium ${handled.unhandled ? "text-red-600 font-bold" : a.handled_by_name ? "text-teal-700" : "text-slate-400"}`}>
-            {a.stillPresent && a.handled_by_name
-              ? `Resolved by ${a.handled_by_name} - condition still present`
-              : handled.text}
+            {a.stillPresent && a.handled_by_name ? `Resolved by ${a.handled_by_name} - condition still present` : handled.text}
           </span>
         </div>
         {(notificationId != null || liveRef) && (
@@ -326,11 +289,7 @@ function AlertRow({ a, notificationId, liveRef, onClick, onRead }: AlertRowProps
           </div>
         )}
       </div>
-      <button
-        onClick={(e) => { e.stopPropagation(); if (!a.isRead) onRead(); setDismissed(true); }}
-        aria-label="Dismiss"
-        className="text-slate-300 hover:text-slate-500 shrink-0"
-      >
+      <button onClick={(e) => { e.stopPropagation(); if (!a.isRead) onRead(); setDismissed(true); }} aria-label="Dismiss" className="text-slate-300 hover:text-slate-500 shrink-0">
         <X className="w-3.5 h-3.5" />
       </button>
     </div>

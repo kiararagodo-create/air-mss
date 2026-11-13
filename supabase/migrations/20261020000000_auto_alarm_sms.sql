@@ -51,6 +51,7 @@ declare
   v_skip text := null;
   v_roles text[] := array[]::text[];
   v_quality boolean := true;
+  v_open_rank int := 0;
 begin
   if p_device is null or btrim(p_device) = '' then
     return jsonb_build_object('error', 'p_device is required');
@@ -188,13 +189,14 @@ begin
   elsif jsonb_array_length(v_recipients) = 0 then
     v_skip := 'skipped_no_recipients';
   elsif v_open_incident is not null then
-    if v_rank > case v_open_incident->>'severity'
+    v_open_rank := case v_open_incident->>'severity'
                  when 'warning' then 1
                  when 'high' then 2
                  when 'danger' then 3
                  when 'critical' then 4
                  else 0
-               end then
+               end;
+    if v_rank > v_open_rank then
       v_skip := null;  -- escalation sends
     elsif (v_open_incident->>'reminder_sent_at') is null
       and now() - coalesce(

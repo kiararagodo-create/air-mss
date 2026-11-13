@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+﻿import { useEffect, useState, type FormEvent } from "react";
 import { UserPlus, Shield, Wrench, Crown, Ban, RotateCcw, Loader2, X, Pencil, Trash2 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../context/AuthContext";
@@ -17,16 +17,12 @@ interface Personnel {
   created_at: string;
 }
 
-// All roles, used for display and for editing an existing admin.
 const ROLE_OPTIONS = [
   { value: "admin", label: "Administrator" },
   { value: "security", label: "Security Personnel" },
   { value: "maintenance", label: "Maintenance Personnel" },
 ];
 
-// Admins are provisioned only via the bootstrap_admins allowlist or direct SQL,
-// never through the app, so the Add form and the Edit form of a non-admin
-// offer only the two assignable roles.
 const ADD_ROLE_OPTIONS = ROLE_OPTIONS.filter((r) => r.value !== "admin");
 
 function RoleIcon({ role }: { role: string }) {
@@ -55,8 +51,8 @@ export default function PersonnelManagementPage() {
 
   function isValidPhone(raw: string | null | undefined) {
     if (!raw) return false;
-    const d = String(raw).replace(/[\s\-+]/g, "");
-    return (d.startsWith("09") && d.length === 11) || (d.startsWith("639") && d.length === 12);
+    const d = String(raw).replace(/\D/g, "");
+    return /^09\d{9}$/.test(d);
   }
 
   const [form, setForm] = useState({
@@ -69,7 +65,6 @@ export default function PersonnelManagementPage() {
     sms_enabled: true,
   });
 
-  // --- Edit state ---
   const [editingPerson, setEditingPerson] = useState<Personnel | null>(null);
   const [editForm, setEditForm] = useState({
     name: "",
@@ -82,7 +77,6 @@ export default function PersonnelManagementPage() {
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
-  // --- Delete state ---
   const [deletingPerson, setDeletingPerson] = useState<Personnel | null>(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -110,17 +104,11 @@ export default function PersonnelManagementPage() {
     });
   }, []);
 
-  // Active admins right now — used to block removing the last one.
   const activeAdminCount = personnel.filter((p) => p.role === "admin" && p.is_active).length;
 
-  // Delete/Deactivate must stay blocked for: yourself, or the last remaining active admin.
   function getLockReason(person: Personnel): string | null {
-    if (person.id === currentUserId) {
-      return "You can't remove your own admin access.";
-    }
-    if (person.role === "admin" && person.is_active && activeAdminCount <= 1) {
-      return "At least one active admin must remain.";
-    }
+    if (person.id === currentUserId) return "You can't remove your own admin access.";
+    if (person.role === "admin" && person.is_active && activeAdminCount <= 1) return "At least one active admin must remain.";
     return null;
   }
 
@@ -138,11 +126,7 @@ export default function PersonnelManagementPage() {
     }
 
     setSubmitting(true);
-
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-
+    const { data: { session } } = await supabase.auth.getSession();
     if (!session) {
       setFormError("Your session expired. Please log in again.");
       setSubmitting(false);
@@ -150,7 +134,6 @@ export default function PersonnelManagementPage() {
     }
 
     const roleLabel = ADD_ROLE_OPTIONS.find((r) => r.value === form.role)?.label ?? form.role;
-
     const { data, error } = await supabase.functions.invoke("admin-create-personnel", {
       body: {
         email: form.email,
@@ -165,7 +148,6 @@ export default function PersonnelManagementPage() {
     });
 
     setSubmitting(false);
-
     if (error || data?.error) {
       setFormError(data?.error ?? error?.message ?? "Failed to create personnel account.");
       return;
@@ -178,22 +160,14 @@ export default function PersonnelManagementPage() {
 
   async function toggleActive(person: Personnel) {
     setTogglingId(person.id);
-
     const updates = { is_active: !person.is_active };
-    const { error } = await (supabase.from("profiles") as any)
-      .update(updates)
-      .eq("id", person.id);
-
+    const { error } = await (supabase.from("profiles") as any).update(updates).eq("id", person.id);
     setTogglingId(null);
-
     if (error) {
       console.error("Failed to update status:", error.message);
       return;
     }
-
-    setPersonnel((prev) =>
-      prev.map((p) => (p.id === person.id ? { ...p, is_active: !p.is_active } : p))
-    );
+    setPersonnel((prev) => prev.map((p) => (p.id === person.id ? { ...p, is_active: !p.is_active } : p)));
   }
 
   async function toggleSms(person: Personnel) {
@@ -201,21 +175,16 @@ export default function PersonnelManagementPage() {
     if (!person.contact_number) return;
     setTogglingSmsId(person.id);
     const newVal = !person.sms_enabled;
-    const { error } = await (supabase.from("profiles") as any)
-      .update({ sms_enabled: newVal })
-      .eq("id", person.id);
+    const { error } = await (supabase.from("profiles") as any).update({ sms_enabled: newVal }).eq("id", person.id);
     setTogglingSmsId(null);
     if (error) {
       showToast("err", error.message ?? "Failed to update SMS alerts.");
       return;
     }
-    setPersonnel((prev) =>
-      prev.map((p) => (p.id === person.id ? { ...p, sms_enabled: newVal } : p))
-    );
+    setPersonnel((prev) => prev.map((p) => (p.id === person.id ? { ...p, sms_enabled: newVal } : p)));
     showToast("ok", newVal ? "SMS alerts enabled." : "SMS alerts disabled.");
   }
 
-  // --- Edit handlers ---
   function openEditForm(person: Personnel) {
     setEditingPerson(person);
     setEditError(null);
@@ -238,24 +207,17 @@ export default function PersonnelManagementPage() {
     e.preventDefault();
     if (!editingPerson) return;
     setEditError(null);
-
     if (!editForm.name || !editForm.email) {
       setEditError("Name and email are required.");
       return;
     }
-
-    // Admins can only be provisioned via bootstrap_admins / SQL. The dropdown
-    // already hides the option for non-admins; this catches a stale form state
-    // too. The database enforces the same rule (see the migration).
     if (editingPerson.role !== "admin" && editForm.role === "admin") {
       setEditError("Only existing admins can hold the Administrator role.");
       return;
     }
 
     setEditSubmitting(true);
-
     const roleLabel = ROLE_OPTIONS.find((r) => r.value === editForm.role)?.label ?? editForm.role;
-
     const updates = {
       name: editForm.name,
       email: editForm.email,
@@ -265,25 +227,16 @@ export default function PersonnelManagementPage() {
       contact_number: editForm.contact_number || null,
       sms_enabled: editForm.sms_enabled,
     };
-
-    const { error } = await (supabase.from("profiles") as any)
-      .update(updates)
-      .eq("id", editingPerson.id);
-
+    const { error } = await (supabase.from("profiles") as any).update(updates).eq("id", editingPerson.id);
     setEditSubmitting(false);
-
     if (error) {
       setEditError(error.message ?? "Failed to update personnel.");
       return;
     }
-
-    setPersonnel((prev) =>
-      prev.map((p) => (p.id === editingPerson.id ? { ...p, ...updates } : p))
-    );
+    setPersonnel((prev) => prev.map((p) => (p.id === editingPerson.id ? { ...p, ...updates } : p)));
     closeEditForm();
   }
 
-  // --- Delete handlers ---
   function openDeleteConfirm(person: Personnel) {
     setDeletingPerson(person);
     setDeleteError(null);
@@ -298,31 +251,22 @@ export default function PersonnelManagementPage() {
     if (!deletingPerson) return;
     setDeleteSubmitting(true);
     setDeleteError(null);
-
-    const { error } = await supabase
-      .from("profiles")
-      .delete()
-      .eq("id", deletingPerson.id);
-
+    const { error } = await supabase.from("profiles").delete().eq("id", deletingPerson.id);
     setDeleteSubmitting(false);
-
     if (error) {
       setDeleteError(error.message ?? "Failed to delete personnel.");
       return;
     }
-
     setPersonnel((prev) => prev.filter((p) => p.id !== deletingPerson.id));
     setDeletingPerson(null);
   }
 
   return (
-    <div className="p-4 sm:p-6 max-w-5xl mx-auto">
+    <div className="p-4 sm:p-6 w-full max-w-full mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
         <div>
           <h1 className="text-xl font-semibold text-slate-900">Personnel Management</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Manage admin, security, and maintenance staff access.
-          </p>
+          <p className="text-sm text-slate-500 mt-1">Manage admin, security, and maintenance staff access.</p>
         </div>
         <button
           onClick={() => setShowAddForm(true)}
@@ -345,245 +289,140 @@ export default function PersonnelManagementPage() {
           Loading personnel...
         </div>
       ) : personnel.length === 0 ? (
-        <div className="text-center py-16 text-slate-400 text-sm">
-          No admin, security, or maintenance personnel added yet.
-        </div>
+        <div className="text-center py-16 text-slate-400 text-sm">No admin, security, or maintenance personnel added yet.</div>
       ) : (
         <>
-          {/* Mobile: stacked cards, shown below md */}
           <div className="md:hidden space-y-3">
-            {personnel.map((person) => (
-              <div
-                key={person.id}
-                className="bg-white rounded-xl border border-slate-200 p-4"
-              >
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <div className="min-w-0">
-                    <p className="font-medium text-slate-800 truncate">{person.name}</p>
-                    <p className="text-xs text-slate-500 truncate">{person.email}</p>
-                  </div>
-                  <span
-                    className={`shrink-0 text-xs font-medium px-2 py-1 rounded-md ${
-                      person.is_active
-                        ? "bg-teal-50 text-teal-700"
-                        : "bg-red-50 text-red-600"
-                    }`}
-                  >
-                    {person.is_active ? "Active" : "Deactivated"}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-1.5 mb-3">
-                  <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-md bg-slate-100 text-slate-700">
-                    <RoleIcon role={person.role} />
-                    {person.role_label}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs mb-3">
-                  <div>
-                    <span className="text-slate-400">Department</span>
-                    <p className="text-slate-600">{person.department ?? "—"}</p>
-                  </div>
-                   <div>
-                    <span className="text-slate-400">Contact No.</span>
-                    <p className="text-slate-600">{person.contact_number ?? "—"}</p>
-                    {person.contact_number && !isValidPhone(person.contact_number) && (
-                      <p className="text-xs text-red-600 font-medium">Invalid number</p>
-                    )}
-                  </div>
-                  <div>
-                    <span className="text-slate-400">SMS Alerts</span>
-                    <div className="flex items-center gap-2 mt-1">
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={person.sms_enabled}
-                        disabled={!isAdmin || !person.contact_number || togglingSmsId === person.id}
-                        title={!person.contact_number ? "Add a contact number first" : undefined}
-                        onClick={() => toggleSms(person)}
-                        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${person.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}
-                      >
-                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${person.sms_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
-                      </button>
-                      {!person.contact_number && (
-                        <span className="text-xs text-slate-400">No number</span>
-                      )}
+            {personnel.map((person) => {
+              const lockReason = getLockReason(person);
+              const deactivateLocked = person.is_active && !!lockReason;
+              const deleteLocked = !!lockReason;
+              return (
+                <div key={person.id} className="bg-white rounded-xl border border-slate-200 p-4">
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="min-w-0">
+                      <p className="font-medium text-slate-800 truncate">{person.name}</p>
+                      <p className="text-xs text-slate-500 truncate">{person.email}</p>
                     </div>
+                    <span className={`shrink-0 text-xs font-medium px-2 py-1 rounded-md ${person.is_active ? "bg-teal-50 text-teal-700" : "bg-red-50 text-red-600"}`}>
+                      {person.is_active ? "Active" : "Deactivated"}
+                    </span>
                   </div>
-                </div>
-
-                {(() => {
-                  const lockReason = getLockReason(person);
-                  // Only the Deactivate action is locked — Reactivate never reduces admin coverage.
-                  const deactivateLocked = person.is_active && !!lockReason;
-                  const deleteLocked = !!lockReason;
-                  return (
-                    <>
-                      {lockReason && (
-                        <p className="text-[11px] text-amber-600 mb-2">{lockReason}</p>
-                      )}
-                      <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
-                        <button
-                          onClick={() => openEditForm(person)}
-                          className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
-                        >
-                          <Pencil className="w-3.5 h-3.5" />
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => toggleActive(person)}
-                          disabled={togglingId === person.id || deactivateLocked}
-                          title={deactivateLocked ? lockReason ?? undefined : undefined}
-                          className={`flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border transition-colors disabled:opacity-50 ${
-                            person.is_active
-                              ? "border-red-200 text-red-600 hover:bg-red-50"
-                              : "border-teal-200 text-teal-700 hover:bg-teal-50"
-                          }`}
-                        >
-                          {togglingId === person.id ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : person.is_active ? (
-                            <Ban className="w-3.5 h-3.5" />
-                          ) : (
-                            <RotateCcw className="w-3.5 h-3.5" />
-                          )}
-                          {person.is_active ? "Deactivate" : "Reactivate"}
-                        </button>
-                        <button
-                          onClick={() => openDeleteConfirm(person)}
-                          disabled={deleteLocked}
-                          title={deleteLocked ? lockReason ?? undefined : undefined}
-                          className="inline-flex items-center justify-center w-8 h-8 shrink-0 rounded-lg border border-slate-200 text-slate-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-slate-500 disabled:hover:border-slate-200"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
-            ))}
-          </div>
-
-          {/* Desktop: table, shown from md up */}
-          <div className="hidden md:block bg-white rounded-xl border border-slate-200 overflow-x-auto">
-            <table className="w-full text-sm min-w-[900px]">
-              <thead>
-                <tr className="border-b border-slate-100 bg-slate-50 text-left text-xs font-medium text-slate-500 tracking-wide">
-                  <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Email</th>
-                  <th className="px-4 py-3">Role</th>
-                  <th className="px-4 py-3">Department</th>
-                  <th className="px-4 py-3">Contact No.</th>
-                  <th className="px-4 py-3">SMS Alerts</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3 text-right w-32">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {personnel.map((person) => (
-                  <tr key={person.id} className="border-b border-slate-50 last:border-0">
-                    <td className="px-4 py-3 font-medium text-slate-800">{person.name}</td>
-                    <td className="px-4 py-3 text-slate-500">{person.email}</td>
-                    <td className="px-4 py-3">
-                      <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-md bg-slate-100 text-slate-700">
-                        <RoleIcon role={person.role} />
-                        {person.role_label}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-slate-500">{person.department ?? "—"}</td>
-                    <td className="px-4 py-3 text-slate-500">
-                      <div className="flex flex-col">
-                        <span>{person.contact_number ?? "—"}</span>
-                        {person.contact_number && !isValidPhone(person.contact_number) && (
-                          <span className="text-xs text-red-600 font-medium">Invalid number</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={person.sms_enabled}
-                          disabled={!isAdmin || !person.contact_number || togglingSmsId === person.id}
-                          title={!person.contact_number ? "Add a contact number first" : undefined}
-                          onClick={() => toggleSms(person)}
-                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${person.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}
-                        >
+                  <div className="flex items-center gap-1.5 mb-3">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-md bg-slate-100 text-slate-700">
+                      <RoleIcon role={person.role} />
+                      {person.role_label}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs mb-3">
+                    <div><span className="text-slate-400">Department</span><p className="text-slate-600">{person.department ?? "—"}</p></div>
+                    <div>
+                      <span className="text-slate-400">Contact No.</span>
+                      <p className="text-slate-600 break-all">{person.contact_number ?? "—"}</p>
+                      {person.contact_number && !isValidPhone(person.contact_number) && <p className="text-xs text-red-600 font-medium">Invalid number (use 09XXXXXXXXX)</p>}
+                    </div>
+                    <div className="col-span-2">
+                      <span className="text-slate-400">SMS Alerts</span>
+                      <div className="flex items-center gap-2 mt-1">
+                        <button type="button" role="switch" aria-checked={person.sms_enabled} disabled={!isAdmin || !person.contact_number || togglingSmsId === person.id} title={!person.contact_number ? "Add a contact number first" : undefined} onClick={() => toggleSms(person)} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${person.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}>
                           <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${person.sms_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
                         </button>
-                        {!person.contact_number && (
-                          <span className="text-xs text-slate-400">No number</span>
-                        )}
+                        {!person.contact_number && <span className="text-xs text-slate-400">No number</span>}
                       </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`text-xs font-medium px-2 py-1 rounded-md ${
-                          person.is_active
-                            ? "bg-teal-50 text-teal-700"
-                            : "bg-red-50 text-red-600"
-                        }`}
-                      >
-                        {person.is_active ? "Active" : "Deactivated"}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      {(() => {
-                        const lockReason = getLockReason(person);
-                        const deactivateLocked = person.is_active && !!lockReason;
-                        const deleteLocked = !!lockReason;
-                        return (
-                          <div className="flex items-center justify-end gap-1.5">
-                            <button
-                              onClick={() => openEditForm(person)}
-                              title="Edit"
-                              className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition-colors"
-                            >
-                              <Pencil className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => toggleActive(person)}
-                              disabled={togglingId === person.id || deactivateLocked}
-                              title={
-                                deactivateLocked
-                                  ? lockReason ?? undefined
-                                  : person.is_active
-                                  ? "Deactivate"
-                                  : "Reactivate"
-                              }
-                              className={`inline-flex items-center justify-center w-8 h-8 rounded-lg border transition-colors disabled:opacity-50 ${
-                                person.is_active
-                                  ? "border-red-200 text-red-600 hover:bg-red-50"
-                                  : "border-teal-200 text-teal-700 hover:bg-teal-50"
-                              }`}
-                            >
-                              {togglingId === person.id ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              ) : person.is_active ? (
-                                <Ban className="w-3.5 h-3.5" />
-                              ) : (
-                                <RotateCcw className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                            <button
-                              onClick={() => openDeleteConfirm(person)}
-                              disabled={deleteLocked}
-                              title={deleteLocked ? lockReason ?? undefined : "Delete"}
-                              className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-200 text-slate-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-slate-500 disabled:hover:border-slate-200"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
+                    </div>
+                  </div>
+                  {lockReason && <p className="text-[11px] text-amber-600 mb-2">{lockReason}</p>}
+                  <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                    <button onClick={() => openEditForm(person)} className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"><Pencil className="w-3.5 h-3.5" />Edit</button>
+                    <button onClick={() => toggleActive(person)} disabled={togglingId === person.id || deactivateLocked} title={deactivateLocked ? lockReason ?? undefined : undefined} className={`flex-1 inline-flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border transition-colors disabled:opacity-50 ${person.is_active ? "border-red-200 text-red-600 hover:bg-red-50" : "border-teal-200 text-teal-700 hover:bg-teal-50"}`}>
+                      {togglingId === person.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : person.is_active ? <Ban className="w-3.5 h-3.5" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                      {person.is_active ? "Deactivate" : "Reactivate"}
+                    </button>
+                    <button onClick={() => openDeleteConfirm(person)} disabled={deleteLocked} title={deleteLocked ? lockReason ?? undefined : undefined} className="inline-flex items-center justify-center w-8 h-8 shrink-0 rounded-lg border border-slate-200 text-slate-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors disabled:opacity-50">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="hidden md:block bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div className="w-full">
+              <table className="w-full table-fixed text-sm">
+                <colgroup>
+                  <col className="w-[14%]" />
+                  <col className="w-[20%]" />
+                  <col className="w-[14%]" />
+                  <col className="w-[14%]" />
+                  <col className="w-[14%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[7%]" />
+                  <col className="w-[7%]" />
+                </colgroup>
+                <thead>
+                  <tr className="border-b border-slate-100 bg-slate-50 text-left text-xs font-medium text-slate-500 tracking-wide">
+                    <th className="px-3 py-3">Name</th>
+                    <th className="px-3 py-3">Email</th>
+                    <th className="px-3 py-3">Role</th>
+                    <th className="px-3 py-3">Department</th>
+                    <th className="px-3 py-3">Contact No.</th>
+                    <th className="px-3 py-3">SMS Alerts</th>
+                    <th className="px-3 py-3">Status</th>
+                    <th className="px-3 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {personnel.map((person) => {
+                    const lockReason = getLockReason(person);
+                    const deactivateLocked = person.is_active && !!lockReason;
+                    const deleteLocked = !!lockReason;
+                    return (
+                      <tr key={person.id} className="border-b border-slate-50 last:border-0 align-top">
+                        <td className="px-3 py-3 font-medium text-slate-800 break-words">{person.name}</td>
+                        <td className="px-3 py-3 text-slate-500 break-all" title={person.email}>{person.email}</td>
+                        <td className="px-3 py-3">
+                          <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-md bg-slate-100 text-slate-700 whitespace-nowrap">
+                            <RoleIcon role={person.role} />
+                            {person.role_label}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3 text-slate-500 break-words">{person.department ?? "—"}</td>
+                        <td className="px-3 py-3 text-slate-500">
+                          <div className="flex flex-col min-w-0">
+                            <span className="break-all">{person.contact_number ?? "—"}</span>
+                            {person.contact_number && !isValidPhone(person.contact_number) && (
+                              <span className="text-xs text-red-600 font-medium">Invalid number</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-2">
+                            <button type="button" role="switch" aria-checked={person.sms_enabled} disabled={!isAdmin || !person.contact_number || togglingSmsId === person.id} title={!person.contact_number ? "Add a contact number first" : undefined} onClick={() => toggleSms(person)} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${person.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}>
+                              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${person.sms_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
                             </button>
                           </div>
-                        );
-                      })()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className={`text-xs font-medium px-2 py-1 rounded-md whitespace-nowrap ${person.is_active ? "bg-teal-50 text-teal-700" : "bg-red-50 text-red-600"}`}>
+                            {person.is_active ? "Active" : "Deactivated"}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button onClick={() => openEditForm(person)} title="Edit" className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => toggleActive(person)} disabled={togglingId === person.id || deactivateLocked} title={deactivateLocked ? lockReason ?? undefined : person.is_active ? "Deactivate" : "Reactivate"} className={`inline-flex items-center justify-center w-8 h-8 rounded-lg border transition-colors disabled:opacity-50 ${person.is_active ? "border-red-200 text-red-600 hover:bg-red-50" : "border-teal-200 text-teal-700 hover:bg-teal-50"}`}>
+                              {togglingId === person.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : person.is_active ? <Ban className="w-3.5 h-3.5" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                            </button>
+                            <button onClick={() => openDeleteConfirm(person)} disabled={deleteLocked} title={deleteLocked ? lockReason ?? undefined : "Delete"} className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-200 text-slate-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-slate-500 disabled:hover:border-slate-200"><Trash2 className="w-3.5 h-3.5" /></button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </>
       )}
@@ -591,115 +430,18 @@ export default function PersonnelManagementPage() {
       {showAddForm && (
         <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center px-4 py-6 z-50 overflow-y-auto">
           <div className="bg-white rounded-2xl w-full max-w-md p-6 relative my-auto">
-            <button
-              onClick={() => setShowAddForm(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <button onClick={() => setShowAddForm(false)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
             <h2 className="text-base font-semibold text-slate-900 mb-4">Add Personnel</h2>
-
-            {formError && (
-              <div className="mb-4 px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-                {formError}
-              </div>
-            )}
-
+            {formError && <div className="mb-4 px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{formError}</div>}
             <form onSubmit={handleAddPersonnel} className="space-y-3">
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Full Name</label>
-                <input
-                  type="text"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Email</label>
-                <input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Temporary Password
-                </label>
-                <input
-                  type="text"
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  placeholder="Min. 8 characters"
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Contact Number (optional)
-                </label>
-                <input
-                  type="tel"
-                  value={form.contact_number}
-                  onChange={(e) => setForm({ ...form, contact_number: e.target.value })}
-                  placeholder="e.g. 09171234567"
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-medium text-slate-500">SMS Alerts</label>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={form.sms_enabled}
-                  onClick={() => setForm({ ...form, sms_enabled: !form.sms_enabled })}
-                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${form.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}
-                >
-                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${form.sms_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
-                </button>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Role</label>
-                <select
-                  value={form.role}
-                  onChange={(e) => setForm({ ...form, role: e.target.value })}
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-                >
-                  {ADD_ROLE_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Department (optional)
-                </label>
-                <input
-                  type="text"
-                  value={form.department}
-                  onChange={(e) => setForm({ ...form, department: e.target.value })}
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-700 disabled:bg-teal-400 text-white text-sm font-medium py-2.5 rounded-lg transition-colors mt-2"
-              >
-                {submitting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Creating...
-                  </>
-                ) : (
-                  "Create Account"
-                )}
-              </button>
+              <div><label className="block text-xs font-medium text-slate-500 mb-1">Full Name</label><input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500" /></div>
+              <div><label className="block text-xs font-medium text-slate-500 mb-1">Email</label><input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500" /></div>
+              <div><label className="block text-xs font-medium text-slate-500 mb-1">Temporary Password</label><input type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Min. 8 characters" className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500" /></div>
+              <div><label className="block text-xs font-medium text-slate-500 mb-1">Contact Number (optional)</label><input type="tel" value={form.contact_number} onChange={(e) => setForm({ ...form, contact_number: e.target.value })} placeholder="e.g. 09171234567" className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500" /></div>
+              <div className="flex items-center justify-between"><label className="text-xs font-medium text-slate-500">SMS Alerts</label><button type="button" role="switch" aria-checked={form.sms_enabled} onClick={() => setForm({ ...form, sms_enabled: !form.sms_enabled })} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${form.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${form.sms_enabled ? "translate-x-4" : "translate-x-0.5"}`} /></button></div>
+              <div><label className="block text-xs font-medium text-slate-500 mb-1">Role</label><select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500">{ADD_ROLE_OPTIONS.map((opt) => (<option key={opt.value} value={opt.value}>{opt.label}</option>))}</select></div>
+              <div><label className="block text-xs font-medium text-slate-500 mb-1">Department (optional)</label><input type="text" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500" /></div>
+              <button type="submit" disabled={submitting} className="w-full flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-700 disabled:bg-teal-400 text-white text-sm font-medium py-2.5 rounded-lg transition-colors mt-2">{submitting ? (<><Loader2 className="w-4 h-4 animate-spin" />Creating...</>) : "Create Account"}</button>
             </form>
           </div>
         </div>
@@ -708,109 +450,17 @@ export default function PersonnelManagementPage() {
       {editingPerson && (
         <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center px-4 py-6 z-50 overflow-y-auto">
           <div className="bg-white rounded-2xl w-full max-w-md p-6 relative my-auto">
-            <button
-              onClick={closeEditForm}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <button onClick={closeEditForm} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
             <h2 className="text-base font-semibold text-slate-900 mb-4">Edit Personnel</h2>
-
-            {editError && (
-              <div className="mb-4 px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-                {editError}
-              </div>
-            )}
-
+            {editError && <div className="mb-4 px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{editError}</div>}
             <form onSubmit={handleEditPersonnel} className="space-y-3">
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Full Name</label>
-                <input
-                  type="text"
-                  value={editForm.name}
-                  onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Email</label>
-                <input
-                  type="email"
-                  value={editForm.email}
-                  onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-                />
-                <p className="text-xs text-slate-400 mt-1">
-                  Note: this updates the profile record only, not the login email.
-                </p>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Contact Number (optional)
-                </label>
-                <input
-                  type="tel"
-                  value={editForm.contact_number}
-                  onChange={(e) => setEditForm({ ...editForm, contact_number: e.target.value })}
-                  placeholder="e.g. 09171234567"
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-medium text-slate-500">SMS Alerts</label>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={editForm.sms_enabled}
-                  onClick={() => setEditForm({ ...editForm, sms_enabled: !editForm.sms_enabled })}
-                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${editForm.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}
-                >
-                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${editForm.sms_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
-                </button>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Role</label>
-                <select
-                  value={editForm.role}
-                  onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-                >
-                  {/* An existing admin keeps the full list; anyone else only
-                      sees the two assignable roles, so nobody can be promoted
-                      to admin from this screen. */}
-                  {(editingPerson.role === "admin" ? ROLE_OPTIONS : ADD_ROLE_OPTIONS).map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Department (optional)
-                </label>
-                <input
-                  type="text"
-                  value={editForm.department}
-                  onChange={(e) => setEditForm({ ...editForm, department: e.target.value })}
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={editSubmitting}
-                className="w-full flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-700 disabled:bg-teal-400 text-white text-sm font-medium py-2.5 rounded-lg transition-colors mt-2"
-              >
-                {editSubmitting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  "Save Changes"
-                )}
-              </button>
+              <div><label className="block text-xs font-medium text-slate-500 mb-1">Full Name</label><input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500" /></div>
+              <div><label className="block text-xs font-medium text-slate-500 mb-1">Email</label><input type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500" /><p className="text-xs text-slate-400 mt-1">Note: this updates the profile record only, not the login email.</p></div>
+              <div><label className="block text-xs font-medium text-slate-500 mb-1">Contact Number (optional)</label><input type="tel" value={editForm.contact_number} onChange={(e) => setEditForm({ ...editForm, contact_number: e.target.value })} placeholder="e.g. 09171234567" className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500" /></div>
+              <div className="flex items-center justify-between"><label className="text-xs font-medium text-slate-500">SMS Alerts</label><button type="button" role="switch" aria-checked={editForm.sms_enabled} onClick={() => setEditForm({ ...editForm, sms_enabled: !editForm.sms_enabled })} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${editForm.sms_enabled ? "bg-teal-600" : "bg-slate-300"}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${editForm.sms_enabled ? "translate-x-4" : "translate-x-0.5"}`} /></button></div>
+              <div><label className="block text-xs font-medium text-slate-500 mb-1">Role</label><select value={editForm.role} onChange={(e) => setEditForm({ ...editForm, role: e.target.value })} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500">{(editingPerson.role === "admin" ? ROLE_OPTIONS : ADD_ROLE_OPTIONS).map((opt) => (<option key={opt.value} value={opt.value}>{opt.label}</option>))}</select></div>
+              <div><label className="block text-xs font-medium text-slate-500 mb-1">Department (optional)</label><input type="text" value={editForm.department} onChange={(e) => setEditForm({ ...editForm, department: e.target.value })} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500" /></div>
+              <button type="submit" disabled={editSubmitting} className="w-full flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-700 disabled:bg-teal-400 text-white text-sm font-medium py-2.5 rounded-lg transition-colors mt-2">{editSubmitting ? (<><Loader2 className="w-4 h-4 animate-spin" />Saving...</>) : "Save Changes"}</button>
             </form>
           </div>
         </div>
@@ -819,53 +469,13 @@ export default function PersonnelManagementPage() {
       {deletingPerson && (
         <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center px-4 py-6 z-50 overflow-y-auto">
           <div className="bg-white rounded-2xl w-full max-w-sm p-6 relative my-auto">
-            <button
-              onClick={closeDeleteConfirm}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-9 h-9 rounded-full bg-red-50 flex items-center justify-center shrink-0">
-                <Trash2 className="w-4 h-4 text-red-600" />
-              </div>
-              <h2 className="text-base font-semibold text-slate-900">Delete Personnel</h2>
-            </div>
-
-            <p className="text-sm text-slate-500 mb-4">
-              Are you sure you want to delete{" "}
-              <span className="font-medium text-slate-700">{deletingPerson.name}</span>? This
-              removes their profile record and cannot be undone.
-            </p>
-
-            {deleteError && (
-              <div className="mb-4 px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-                {deleteError}
-              </div>
-            )}
-
+            <button onClick={closeDeleteConfirm} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+            <div className="flex items-center gap-3 mb-3"><div className="w-9 h-9 rounded-full bg-red-50 flex items-center justify-center shrink-0"><Trash2 className="w-4 h-4 text-red-600" /></div><h2 className="text-base font-semibold text-slate-900">Delete Personnel</h2></div>
+            <p className="text-sm text-slate-500 mb-4">Are you sure you want to delete <span className="font-medium text-slate-700">{deletingPerson.name}</span>? This removes their profile record and cannot be undone.</p>
+            {deleteError && <div className="mb-4 px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{deleteError}</div>}
             <div className="flex gap-2">
-              <button
-                onClick={closeDeleteConfirm}
-                className="flex-1 text-sm font-medium px-4 py-2.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDeletePersonnel}
-                disabled={deleteSubmitting}
-                className="flex-1 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 disabled:bg-red-400 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors"
-              >
-                {deleteSubmitting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Deleting...
-                  </>
-                ) : (
-                  "Delete"
-                )}
-              </button>
+              <button onClick={closeDeleteConfirm} className="flex-1 text-sm font-medium px-4 py-2.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors">Cancel</button>
+              <button onClick={handleDeletePersonnel} disabled={deleteSubmitting} className="flex-1 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 disabled:bg-red-400 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors">{deleteSubmitting ? (<><Loader2 className="w-4 h-4 animate-spin" />Deleting...</>) : "Delete"}</button>
             </div>
           </div>
         </div>

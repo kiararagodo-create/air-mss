@@ -1,0 +1,686 @@
+﻿/**
+ * air-alerts — server-side notification generation + automatic/manual SMS.
+ *
+ * Triggers (no dashboard required):
+ *  - DB webhook/trigger on INSERT into public.readings -> create/resolve alerts + auto SMS
+ *  - { action: "resend", notification_id } -> manual resend path (kept for compatibility)
+ *  - { action: "check_offline" } -> offline/online sweep (cron/schedule)
+ */
+import { createClient } from "https://esm.sh/v135/@supabase/supabase-js@2.45.4?target=deno&standalone";
+import {
+  evaluateSensor,
+  formatReadingForDisplay,
+  isSensorFaultReading,
+  newActionToken,
+  rolesForSeverity,
+  type SensorType,
+  type Thresholds,
+} from "../_shared/air_alerts.ts";
+import { buildAllClearMessage, buildOfflineMessage, manilaTime } from "../_shared/sms_templates.ts";
+import { getSmsConfig, getSmsCredits, sendSms } from "../_shared/sms-provider.ts";
+import { getSmsRecipients, isValidPhMobile, normalizePhSmsNumber } from "../_shared/sms_recipients.ts";
+import { OFFLINE_AFTER_MINUTES, OFFLINE_AFTER_S } from "../_shared/offline_config.ts";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+type Admin = ReturnType<typeof createClient>;
+
+const SMS_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes per alert (and per room+sensor+severity guard)
+const SEV_RANK: Record<string, number> = { info: 0, warning: 1, high: 2, danger: 3, critical: 4 };
+
+function sevAtLeast(current: string, min: string): boolean {
+  return (SEV_RANK[current] ?? 0) >= (SEV_RANK[min] ?? 0);
+}
+
+async function loadSmsSettings(admin: Admin): Promise<{
+  automatic: boolean;
+  minSeverity: string;
+  reminderMinutes: number;
+  closeAfterMinutes: number;
+  maxSmsPerHour: number;
+  maxSmsPerDay: number;
+  lowCreditThreshold: number;
+}> {
+  try {
+    const { data } = await admin
+      .from("sms_alert_settings")
+      .select("automatic_sms, min_severity, reminder_minutes, close_after_minutes, max_sms_per_hour, max_sms_per_day, low_credit_threshold")
+      .eq("id", 1)
+      .maybeSingle();
+    if (data) {
+      return {
+        automatic: data.automatic_sms !== false,
+        minSeverity: String(data.min_severity ?? "warning"),
+        reminderMinutes: Number(data.reminder_minutes ?? 60),
+        closeAfterMinutes: Number(data.close_after_minutes ?? 10),
+        maxSmsPerHour: Number(data.max_sms_per_hour ?? 5),
+        maxSmsPerDay: Number(data.max_sms_per_day ?? 20),
+        lowCreditThreshold: Number(data.low_credit_threshold ?? 20),
+      };
+    }
+  } catch { /* defaults */ }
+  return {
+    automatic: true,
+    minSeverity: "warning",
+    reminderMinutes: 60,
+    closeAfterMinutes: 10,
+    maxSmsPerHour: 5,
+    maxSmsPerDay: 20,
+    lowCreditThreshold: 20,
+  };
+}
+
+async function resolveThresholds(admin: Admin): Promise<Thresholds | null> {
+  const { data } = await admin.rpc("resolve_thresholds", { p_at: null });
+  if (!data) return null;
+  const r = data as Record<string, unknown>;
+  const n = (k: string, fb: number) => {
+    const v = Number(r[k]);
+    return Number.isFinite(v) ? v : fb;
+  };
+  return {
+    co2: { warning: n("co2_warning", 1000), high: n("co2_high", 2000), danger: n("co2_danger", 3500) },
+    lpg: { warning: n("lpg_warning", 1000), high: n("lpg_high", 2100), danger: n("lpg_danger", 4200) },
+    temp: { freezeBelow: n("temp_freeze_below", 5), coolBelow: n("temp_cool_below", 18), heatAbove: n("temp_heat_above", 35) },
+    humidity: { dryBelow: n("humidity_dry_below", 20), lowBelow: n("humidity_low_below", 30), moldAbove: n("humidity_mold_above", 80) },
+  };
+}
+
+function fmtReading(sensor: SensorType, value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "N/A";
+  if (sensor === "temp") return `${value.toFixed(1)} °C`;
+  if (sensor === "humidity") return `${Math.round(value)} %RH`;
+  return `${Math.round(value)} ppm`;
+}
+
+function fmtDisplayReading(sensor: SensorType, value: number | null, humidity: number | null, allZero: boolean): string {
+  return formatReadingForDisplay(sensor, value, humidity, allZero);
+}
+
+function buildAlertSms(severity: string, levelLabel: string, room: string, floor: string, sensorLabel: string, reading: string, time: string): string {
+  const sev = String(levelLabel || severity || "ALERT").toUpperCase();
+  const loc = floor ? `${room} - ${floor}` : room;
+  return `[${sev}] ${loc}: ${sensorLabel} ${reading} at ${time}. Please respond.`.slice(0, 160);
+}
+
+function readingNumericForDb(sensor: SensorType, value: number | null, allZero: boolean): number | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (isSensorFaultReading(sensor, value, null, allZero)) return null;
+  return value;
+}
+
+async function insertSmsLog(
+  admin: Admin,
+  row: {
+    notification_id?: number | null;
+    personnel_id?: string | null;
+    recipient_name?: string;
+    recipient_role?: string;
+    phone?: string | null;
+    message: string;
+    status: string;
+    provider_response?: string | null;
+    provider?: string | null;
+    provider_message_id?: string | null;
+    provider_status?: string | null;
+    send_mode?: "auto" | "manual";
+    is_auto?: boolean;
+  },
+) {
+  const payload: any = {
+    notification_id: row.notification_id ?? null,
+    personnel_id: row.personnel_id ?? null,
+    recipient_name: row.recipient_name ?? "",
+    recipient_role: row.recipient_role ?? "",
+    phone: row.phone ?? null,
+    message: row.message,
+    status: row.status,
+    provider_response: row.provider_response ?? null,
+    provider: row.provider ?? null,
+    provider_message_id: row.provider_message_id ?? null,
+    provider_status: row.provider_status ?? row.status,
+    send_mode: row.send_mode ?? (row.is_auto ? "auto" : "manual"),
+    is_auto: row.is_auto ?? (row.send_mode === "auto"),
+  };
+  const { error } = await admin.from("sms_logs").insert(payload);
+  if (error) {
+    // Fallback for databases where migration adding send_mode/is_auto not applied yet.
+    const fallback = { ...payload };
+    delete fallback.send_mode;
+    delete fallback.is_auto;
+    await admin.from("sms_logs").insert(fallback);
+  }
+}
+
+async function upsertNotification(
+  admin: Admin,
+  params: {
+    device_id: string; room_name: string; floor: string; sensor_type: SensorType;
+    level_label: string; severity: string; reading_value: number | null;
+    reading_unit: string; message: string;
+  },
+): Promise<{ id: number; created: boolean; escalated: boolean; previousLevel?: string } | null> {
+  const { data: existing } = await admin
+    .from("air_notifications")
+    .select("id, level_label, severity, status")
+    .eq("device_id", params.device_id)
+    .eq("sensor_type", params.sensor_type)
+    .eq("status", "open")
+    .maybeSingle();
+
+  if (existing) {
+    if (existing.level_label === params.level_label && existing.severity === params.severity) {
+      await admin.from("air_notifications")
+        .update({ reading_value: params.reading_value, message: params.message })
+        .eq("id", existing.id);
+      return { id: existing.id, created: false, escalated: false, previousLevel: existing.level_label };
+    }
+    const escalated = (SEV_RANK[params.severity] ?? 0) > (SEV_RANK[existing.severity] ?? 0);
+    await admin.from("air_notifications")
+      .update({
+        status: "resolved",
+        resolved_at: new Date().toISOString(),
+        resolution_note: escalated ? `Escalated to ${params.level_label}` : `Changed to ${params.level_label}`,
+      })
+      .eq("id", existing.id);
+    const { data } = await admin.from("air_notifications").insert({
+      ...params,
+      escalation_of: existing.id,
+      status: "open",
+    }).select("id").single();
+    return data ? { id: data.id, created: true, escalated, previousLevel: existing.level_label } : null;
+  }
+
+  const { data } = await admin.from("air_notifications").insert({
+    ...params,
+    status: "open",
+  }).select("id").single();
+  return data ? { id: data.id, created: true, escalated: false } : null;
+}
+
+async function resolveSensor(admin: Admin, deviceId: string, sensor: SensorType, note = "Reading returned to safe range") {
+  await admin.from("air_notifications")
+    .update({ status: "resolved", resolved_at: new Date().toISOString(), resolution_note: note })
+    .eq("device_id", deviceId)
+    .eq("sensor_type", sensor)
+    .eq("status", "open");
+}
+
+async function hasSuccessfulAutoSmsForNotification(admin: Admin, notificationId: number): Promise<boolean> {
+  const { data, error } = await admin
+    .from("sms_logs")
+    .select("id,status,send_mode,is_auto")
+    .eq("notification_id", notificationId)
+    .in("status", ["submitted", "in_progress"])
+    .order("sent_at", { ascending: false })
+    .limit(20);
+  if (error || !data) return false;
+  return (data as any[]).some((r) => r.is_auto === true || r.send_mode === "auto" || r.send_mode == null);
+}
+
+async function lastAutoSmsAtForNotification(admin: Admin, notificationId: number): Promise<string | null> {
+  const { data } = await admin
+    .from("sms_logs")
+    .select("sent_at,status,send_mode,is_auto")
+    .eq("notification_id", notificationId)
+    .in("status", ["submitted", "in_progress"])
+    .order("sent_at", { ascending: false })
+    .limit(20);
+  if (!data) return null;
+  const row = (data as any[]).find((r) => r.is_auto === true || r.send_mode === "auto" || r.send_mode == null);
+  return row?.sent_at ?? null;
+}
+
+async function countRecentSubmittedSms(admin: Admin, hours: number): Promise<number> {
+  const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  const { count } = await admin.from("sms_logs")
+    .select("id", { count: "exact", head: true })
+    .gte("sent_at", cutoff)
+    .eq("status", "submitted");
+  return count ?? 0;
+}
+
+async function sendAutoSmsForAlert(
+  admin: Admin,
+  params: {
+    notification: any;
+    message: string;
+    reason: "new_alert" | "escalation" | "cooldown_reminder" | "unacknowledged_reminder" | "offline" | "manual_resend_auto";
+  },
+): Promise<{ attempted: boolean; reason: string | null }> {
+  const n = params.notification;
+  const cfg = getSmsConfig();
+  const settings = await loadSmsSettings(admin);
+
+  if (!settings.automatic && params.reason !== "manual_resend_auto") {
+    await insertSmsLog(admin, {
+      notification_id: n.id,
+      message: params.message,
+      status: "skipped_disabled",
+      provider_response: "automatic_sms disabled",
+      provider: cfg.provider,
+      is_auto: true,
+    });
+    return { attempted: false, reason: "automatic_sms_disabled" };
+  }
+
+  if (!sevAtLeast(n.severity, settings.minSeverity)) {
+    await insertSmsLog(admin, {
+      notification_id: n.id,
+      message: params.message,
+      status: "skipped_disabled",
+      provider_response: `Below min severity (${settings.minSeverity})`,
+      provider: cfg.provider,
+      is_auto: true,
+    });
+    return { attempted: false, reason: "below_min_severity" };
+  }
+
+  if (n.status === "acknowledged" || n.status === "resolved") {
+    await insertSmsLog(admin, {
+      notification_id: n.id,
+      message: params.message,
+      status: n.status === "acknowledged" ? "skipped_acknowledged" : "skipped_open_incident",
+      provider_response: `Notification is ${n.status}`,
+      provider: cfg.provider,
+      is_auto: true,
+    });
+    return { attempted: false, reason: `notification_${n.status}` };
+  }
+
+  // Cooldown: one SMS per alert within cooldown window unless escalation.
+  if (params.reason !== "escalation" && params.reason !== "manual_resend_auto") {
+    const lastSentAt = await lastAutoSmsAtForNotification(admin, n.id);
+    if (lastSentAt) {
+      const elapsed = Date.now() - new Date(lastSentAt).getTime();
+      if (elapsed < SMS_COOLDOWN_MS) {
+        await insertSmsLog(admin, {
+          notification_id: n.id,
+          message: params.message,
+          status: "skipped_rate_limited",
+          provider_response: `Cooldown active (${Math.ceil((SMS_COOLDOWN_MS - elapsed) / 1000)}s remaining)`,
+          provider: cfg.provider,
+          is_auto: true,
+        });
+        return { attempted: false, reason: "cooldown" };
+      }
+    }
+  }
+
+  // SMS safety caps removed (no hourly/daily cap enforcement).
+
+  const roles = rolesForSeverity(n.severity, n.level_label);
+  const recipients = await getSmsRecipients(admin, roles);
+  if (recipients.length === 0) {
+    await insertSmsLog(admin, {
+      notification_id: n.id,
+      message: params.message,
+      status: "skipped_no_recipients",
+      provider_response: `No active approved personnel with sms_enabled and valid number for roles: ${roles.join(", ") || "(none)"}`,
+      provider: cfg.provider,
+      is_auto: true,
+    });
+    return { attempted: false, reason: "no_recipients" };
+  }
+
+  // Credit guard (best effort). Danger/critical bypass low-credit warning guard except hard 0.
+  let credits: number | null = null;
+  if (!cfg.dryRun) {
+    try {
+      const c = await getSmsCredits(true);
+      credits = c.credits;
+    } catch { credits = null; }
+  }
+  const dangerCritical = n.severity === "danger" || n.severity === "critical";
+  if (credits === 0) {
+    for (const r of recipients) {
+      await insertSmsLog(admin, {
+        notification_id: n.id,
+        personnel_id: r.id,
+        recipient_name: r.name,
+        recipient_role: r.role,
+        phone: r.contact_number,
+        message: params.message,
+        status: "skipped_low_credits",
+        provider_response: "SMS credits are 0",
+        provider: cfg.provider,
+        is_auto: true,
+      });
+    }
+    return { attempted: false, reason: "credits_zero" };
+  }
+  if (!dangerCritical && credits !== null && credits < settings.lowCreditThreshold) {
+    for (const r of recipients) {
+      await insertSmsLog(admin, {
+        notification_id: n.id,
+        personnel_id: r.id,
+        recipient_name: r.name,
+        recipient_role: r.role,
+        phone: r.contact_number,
+        message: params.message,
+        status: "skipped_low_credits",
+        provider_response: `Credits below threshold (${credits} < ${settings.lowCreditThreshold})`,
+        provider: cfg.provider,
+        is_auto: true,
+      });
+    }
+    return { attempted: false, reason: "low_credits" };
+  }
+
+  if (cfg.dryRun) {
+    for (const r of recipients) {
+      await insertSmsLog(admin, {
+        notification_id: n.id,
+        personnel_id: r.id,
+        recipient_name: r.name,
+        recipient_role: r.role,
+        phone: r.contact_number,
+        message: params.message,
+        status: "skipped_dry_run",
+        provider_response: "DRY_RUN enabled",
+        provider: cfg.provider,
+        is_auto: true,
+      });
+    }
+    return { attempted: false, reason: "dry_run" };
+  }
+
+  let attempted = false;
+  for (const r of recipients) {
+    // Extra guard: normalize/validate again and log invalid numbers explicitly.
+    if (!isValidPhMobile(r.contact_number) || !normalizePhSmsNumber(r.contact_number)) {
+      await insertSmsLog(admin, {
+        notification_id: n.id,
+        personnel_id: r.id,
+        recipient_name: r.name,
+        recipient_role: r.role,
+        phone: r.contact_number,
+        message: params.message,
+        status: "invalid_number",
+        provider_response: "Invalid PH mobile number (must be 11 digits starting with 09)",
+        provider: cfg.provider,
+        is_auto: true,
+      });
+      continue;
+    }
+
+    attempted = true;
+    const token = newActionToken();
+    try {
+      await admin.from("notification_recipients").upsert({
+        notification_id: n.id,
+        personnel_id: r.id,
+        personnel_name: r.name ?? "",
+        personnel_role: r.role ?? "",
+        phone: r.contact_number,
+        action_token: token,
+        expires_at: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      }, { onConflict: "notification_id,personnel_id" });
+    } catch { /* best effort */ }
+
+    const res = await sendSms({ to: r.contact_number, message: params.message }, true);
+    await insertSmsLog(admin, {
+      notification_id: n.id,
+      personnel_id: r.id,
+      recipient_name: r.name,
+      recipient_role: r.role,
+      phone: r.contact_number,
+      message: params.message,
+      status: res.ok ? "submitted" : "failed",
+      provider_response: res.error ?? (typeof res.raw === "string" ? res.raw : JSON.stringify(res.raw ?? {})),
+      provider: res.provider ?? cfg.provider,
+      provider_message_id: res.providerMessageId ?? null,
+      provider_status: res.status ?? (res.ok ? "submitted" : "failed"),
+      is_auto: true,
+    });
+  }
+
+  if (attempted) {
+    try {
+      await admin.from("air_notifications").update({ escalated_at: new Date().toISOString() }).eq("id", n.id);
+    } catch { /* column may not exist in older schema */ }
+  }
+
+  return { attempted, reason: attempted ? null : "no_valid_recipients" };
+}
+
+async function handleReading(admin: Admin, record: any) {
+  const th = await resolveThresholds(admin);
+  if (!th) return json({ error: "No thresholds" }, 500);
+
+  const device_id = String(record.device_id ?? "");
+  if (!device_id) return json({ error: "Missing device_id" }, 400);
+
+  const created_at = record.created_at ? String(record.created_at) : new Date().toISOString();
+  const { data: room } = await admin.from("rooms").select("name, floor").eq("id", device_id).maybeSingle();
+  const room_name = room?.name ?? device_id;
+  const floor = room?.floor ?? "";
+
+  const readingAgeMs = Date.now() - new Date(created_at).getTime();
+  const stale = Number.isFinite(readingAgeMs) && readingAgeMs > OFFLINE_AFTER_S * 1000;
+
+  const values = {
+    co2: record.co2 == null ? null : Number(record.co2),
+    lpg: record.lpg == null ? null : Number(record.lpg),
+    temp: record.temp == null ? null : Number(record.temp),
+    humidity: record.humidity == null ? null : Number(record.humidity),
+  };
+  const allZero = [values.co2, values.lpg, values.temp, values.humidity].every((v) => v === 0);
+
+  const sensors: { key: SensorType; label: string; unit: string; value: number | null }[] = [
+    { key: "co2", label: "CO2", unit: "ppm", value: values.co2 },
+    { key: "lpg", label: "LPG", unit: "ppm", value: values.lpg },
+    { key: "temp", label: "Temperature", unit: "°C", value: values.temp },
+    { key: "humidity", label: "Humidity", unit: "%RH", value: values.humidity },
+  ];
+
+  const triggered: any[] = [];
+  const escalated: any[] = [];
+  const faults: string[] = [];
+
+  for (const s of sensors) {
+    if (stale) continue;
+    const faulty = isSensorFaultReading(s.key, s.value, values.humidity, allZero);
+    if (faulty) {
+      faults.push(`${s.label}=${s.value ?? "null"}`);
+      await resolveSensor(admin, device_id, s.key, "Sensor fault / invalid reading");
+      continue;
+    }
+
+    const ev = evaluateSensor(s.key as any, s.value, th);
+    if (!ev) {
+      await resolveSensor(admin, device_id, s.key, "Reading returned to safe range");
+      continue;
+    }
+
+    const msg = buildAlertSms(ev.severity, ev.level_label, room_name, floor, s.label, fmtReading(s.key, ev.reading_value), manilaTime());
+    const up = await upsertNotification(admin, {
+      device_id,
+      room_name,
+      floor,
+      sensor_type: s.key,
+      level_label: ev.level_label,
+      severity: ev.severity,
+      reading_value: ev.reading_value,
+      reading_unit: ev.reading_unit,
+      message: msg,
+    });
+    if (!up) continue;
+
+    const { data: notif } = await admin.from("air_notifications").select("*").eq("id", up.id).maybeSingle();
+    if (!notif) continue;
+
+    // One SMS per alert: only on newly created alert, or escalation, or unack after cooldown.
+    if (up.created) {
+      triggered.push({ notif, up, reason: up.escalated ? "escalation" : "new_alert" });
+      if (up.escalated) escalated.push(notif);
+    } else if (notif.status === "open") {
+      const lastSentAt = await lastAutoSmsAtForNotification(admin, notif.id);
+      const elapsed = lastSentAt ? Date.now() - new Date(lastSentAt).getTime() : Infinity;
+      if (!lastSentAt || elapsed >= SMS_COOLDOWN_MS) {
+        triggered.push({ notif, up, reason: "unacknowledged_reminder" });
+      }
+    }
+  }
+
+  if (faults.length > 0) {
+    await insertSmsLog(admin, {
+      notification_id: null,
+      message: `Sensor fault detected for ${room_name} (${device_id}): ${faults.join(", ")}`,
+      status: "skipped_quality",
+      provider_response: allZero ? "All sensor values zero / likely sensor fault" : "Invalid reading (NaN/negative/out of range/fault)",
+      provider: getSmsConfig().provider,
+      is_auto: true,
+    });
+  }
+
+  // Device came online with a fresh reading: resolve offline alert(s)
+  if (!stale) {
+    const { data: openOffline } = await admin.from("air_notifications")
+      .select("id")
+      .eq("device_id", device_id)
+      .eq("level_label", "Offline")
+      .eq("status", "open");
+    if (openOffline && openOffline.length > 0) {
+      for (const row of openOffline as any[]) {
+        const { data: notif } = await admin.from("air_notifications").select("*").eq("id", row.id).maybeSingle();
+        if (notif) {
+          await sendAutoSmsForAlert(admin, {
+            notification: notif,
+            message: buildAllClearMessage(room_name, manilaTime()),
+            reason: "new_alert",
+          });
+        }
+      }
+      await admin.from("air_notifications")
+        .update({ status: "resolved", resolved_at: new Date().toISOString(), resolution_note: "Device back online" })
+        .eq("device_id", device_id)
+        .eq("level_label", "Offline")
+        .eq("status", "open");
+    }
+  }
+
+  // Send automatic SMS for triggered alerts (one per alert, de-duped above)
+  for (const t of triggered) {
+    await sendAutoSmsForAlert(admin, {
+      notification: t.notif,
+      message: t.notif.message || buildAlertSms(t.notif.severity, t.notif.level_label, room_name, floor, String(t.notif.sensor_type).toUpperCase(), fmtReading(t.notif.sensor_type, t.notif.reading_value), manilaTime()),
+      reason: t.reason,
+    });
+  }
+
+  return json({ status: "processed", device_id, triggered: triggered.length, faults: faults.length, escalated: escalated.length, stale });
+}
+
+async function checkOffline(admin: Admin) {
+  const cutoff = new Date(Date.now() - OFFLINE_AFTER_S * 1000).toISOString();
+  const { data: rooms } = await admin.from("rooms").select("id, name, floor");
+  const created: number[] = [];
+
+  for (const room of ((rooms as any[]) ?? [])) {
+    const { data: latest } = await admin.from("readings")
+      .select("created_at")
+      .eq("device_id", room.id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const lastSeen = latest?.created_at as string | undefined;
+    const stale = !lastSeen || lastSeen < cutoff;
+    if (!stale) continue;
+
+    const { data: open } = await admin.from("air_notifications")
+      .select("id")
+      .eq("device_id", room.id)
+      .eq("level_label", "Offline")
+      .eq("status", "open")
+      .maybeSingle();
+    if (open) continue;
+
+    const msg = buildOfflineMessage(room.name ?? room.id, OFFLINE_AFTER_MINUTES, manilaTime());
+    const { data } = await admin.from("air_notifications").insert({
+      device_id: room.id,
+      room_name: room.name ?? room.id,
+      floor: room.floor ?? "",
+      sensor_type: "device",
+      level_label: "Offline",
+      severity: "warning",
+      reading_value: null,
+      reading_unit: "",
+      message: msg,
+      status: "open",
+    }).select("*").single();
+    if (!data) continue;
+
+    created.push(data.id);
+    await sendAutoSmsForAlert(admin, {
+      notification: data,
+      message: msg,
+      reason: "offline",
+    });
+  }
+
+  // Unacknowledged reminder: resend for open alerts still unacknowledged after cooldown
+  const reminderCutoff = new Date(Date.now() - SMS_COOLDOWN_MS).toISOString();
+  const { data: openUnacked } = await admin.from("air_notifications")
+    .select("*")
+    .eq("status", "open")
+    .in("severity", ["warning", "high", "danger", "critical"])
+    .lte("created_at", reminderCutoff)
+    .limit(100);
+  for (const n of ((openUnacked as any[]) ?? [])) {
+    const lastSent = await lastAutoSmsAtForNotification(admin, n.id);
+    if (lastSent && Date.now() - new Date(lastSent).getTime() < SMS_COOLDOWN_MS) continue;
+    if (!lastSent) continue; // first send handled on creation path
+    const roomLoc = n.floor ? `${n.room_name} - ${n.floor}` : n.room_name;
+    const reading = n.reading_value != null ? fmtReading(n.sensor_type, n.reading_value) : "sensor alert";
+    const msg = buildAlertSms(n.severity, n.level_label, n.room_name, n.floor ?? "", String(n.sensor_type).toUpperCase(), reading, manilaTime());
+    await sendAutoSmsForAlert(admin, { notification: n, message: msg, reason: "unacknowledged_reminder" });
+  }
+
+  return json({ status: "ok", offline_created: created.length });
+}
+
+async function resendSms(admin: Admin, notificationId: number) {
+  const { data: n } = await admin.from("air_notifications").select("*").eq("id", notificationId).maybeSingle();
+  if (!n) return json({ error: "Notification not found" }, 404);
+  if (n.status === "acknowledged" || n.status === "resolved") {
+    return json({ status: "skipped", reason: `Notification is ${n.status}` });
+  }
+  const reading = n.reading_value != null ? fmtReading(n.sensor_type, n.reading_value) : "alert";
+  const msg = n.message || buildAlertSms(n.severity, n.level_label, n.room_name ?? n.device_id, n.floor ?? "", String(n.sensor_type).toUpperCase(), reading, manilaTime());
+  const result = await sendAutoSmsForAlert(admin, { notification: n, message: msg, reason: "manual_resend_auto" });
+  return json({ status: "resent", result });
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) return json({ error: "Missing Supabase secrets" }, 500);
+
+  const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
+  let payload: any;
+  try { payload = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
+
+  if (payload?.action === "check_offline") return await checkOffline(admin);
+  if (payload?.action === "resend") return await resendSms(admin, Number(payload.notification_id));
+
+  // Readings webhook payload
+  const record = payload?.record ?? payload;
+  if (!record || !record.device_id) return json({ error: "Missing payload.record" }, 400);
+  return await handleReading(admin, record);
+});
+

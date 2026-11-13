@@ -1,4 +1,4 @@
-ï»¿/**
+/**
  * air-alerts - server-side notification generation + automatic SMS (iProgSMS).
  *
  * Triggers (no dashboard required):
@@ -141,7 +141,7 @@ async function resolveThresholds(admin: Admin): Promise<Thresholds | null> {
 
 function fmtReading(sensor: SensorType, value: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
-  if (sensor === "temp") return `${value.toFixed(1)} Â°C`;
+  if (sensor === "temp") return `${value.toFixed(1)} °C`;
   if (sensor === "humidity") return `${Math.round(value)} %RH`;
   return `${Math.round(value)} ppm`;
 }
@@ -433,6 +433,8 @@ async function sendAutoSmsForAlert(
 
   let attempted = false;
   for (const r of recipients) {
+    const rawPhone = String(r.contact_number ?? "").replace(/[\s()-]/g, "");
+    if (/^\+?639\d{9}$/.test(rawPhone)) r.contact_number = "0" + rawPhone.replace(/^\+?63/, "");
     if (!isValidPhMobile(r.contact_number) || !normalizePhSmsNumber(r.contact_number)) {
       await insertSmsLog(admin, {
         notification_id: n.id, personnel_id: r.id, recipient_name: r.name, recipient_role: r.role,
@@ -515,7 +517,7 @@ async function handleReading(admin: Admin, record: any) {
   const sensors: { key: SensorType; label: string; unit: string; value: number | null }[] = [
     { key: "co2", label: "CO2", unit: "ppm", value: values.co2 },
     { key: "lpg", label: "LPG", unit: "ppm", value: values.lpg },
-    { key: "temp", label: "Temperature", unit: "Â°C", value: values.temp },
+    { key: "temp", label: "Temperature", unit: "°C", value: values.temp },
     { key: "humidity", label: "Humidity", unit: "%RH", value: values.humidity },
   ];
 

@@ -1,4 +1,6 @@
-﻿-- 1-minute sweep so delayed Warning/High SMS (WARNING_SMS_DELAY_SECONDS, default 30s)
+alter table public.air_notifications add column if not exists last_sms_sent_at timestamptz;
+
+-- 1-minute sweep so delayed Warning/High SMS (WARNING_SMS_DELAY_SECONDS, default 30s)
 -- and offline/reminder processing run promptly via air-alerts {action:"check_offline"}.
 -- Safe to re-run. Requires pg_cron + pg_net and correct app_config.anon_key/URL.
 begin;

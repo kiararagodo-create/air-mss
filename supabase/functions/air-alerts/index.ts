@@ -19,7 +19,7 @@ import {
 import { buildAllClearMessage, buildOfflineMessage, manilaTime } from "../_shared/sms_templates.ts";
 import { getSmsConfig, getSmsCredits, sendSms } from "../_shared/sms-provider.ts";
 import { getSmsRecipients, isValidPhMobile, normalizePhSmsNumber } from "../_shared/sms_recipients.ts";
-import { OFFLINE_AFTER_MINUTES, OFFLINE_AFTER_S } from "../_shared/offline_config.ts";
+import { OFFLINE_AFTER_MINUTES, DEFAULT_OFFLINE_AFTER_S } from "../_shared/offline_config.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -502,7 +502,7 @@ async function handleReading(admin: Admin, record: any) {
   const floor = room?.floor ?? "";
 
   const readingAgeMs = Date.now() - new Date(created_at).getTime();
-  const stale = Number.isFinite(readingAgeMs) && readingAgeMs > OFFLINE_AFTER_S * 1000;
+  const stale = Number.isFinite(readingAgeMs) && readingAgeMs > DEFAULT_OFFLINE_AFTER_S * 1000;
 
   const values = {
     co2: record.co2 == null ? null : Number(record.co2),
@@ -641,7 +641,7 @@ async function handleReading(admin: Admin, record: any) {
 }
 
 async function checkOffline(admin: Admin) {
-  const cutoff = new Date(Date.now() - OFFLINE_AFTER_S * 1000).toISOString();
+  const cutoff = new Date(Date.now() - DEFAULT_OFFLINE_AFTER_S * 1000).toISOString();
   const roomsQuery = `select id,name,floor from public.rooms`;
   const { data: rooms, error: roomsErr } = await admin.from("rooms").select("id, name, floor");
   if (roomsErr) {

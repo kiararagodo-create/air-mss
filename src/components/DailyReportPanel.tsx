@@ -176,7 +176,7 @@ export default function DailyReportPanel({
     return counts;
   }, [rawReadings, thresholds]);
 
-  const searchedReadings = useMemo(() => {
+const searchedReadings = useMemo(() => {
     const q = dangerSearch.trim().toLowerCase();
     if (!q) return filteredReadings;
     return filteredReadings.filter((r) => {
@@ -185,12 +185,17 @@ export default function DailyReportPanel({
     });
   }, [filteredReadings, dangerSearch, thresholds]);
 
-  const READINGS_PAGE_SIZE = 100;
-  const readingsTotalPages = Math.max(1, Math.ceil(searchedReadings.length / READINGS_PAGE_SIZE));
-  const pagedReadings = useMemo(() => {
+// Newest first (display only). Do not change the query order.
+const sortedReadings = useMemo(() => [...searchedReadings].sort((a, b) => 
+    new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+), [searchedReadings]);
+
+const READINGS_PAGE_SIZE = 100;
+const readingsTotalPages = Math.max(1, Math.ceil(sortedReadings.length / READINGS_PAGE_SIZE));
+const pagedReadings = useMemo(() => {
     const start = tablePage * READINGS_PAGE_SIZE;
-    return searchedReadings.slice(start, start + READINGS_PAGE_SIZE);
-  }, [searchedReadings, tablePage]);
+    return sortedReadings.slice(start, start + READINGS_PAGE_SIZE);
+}, [sortedReadings, tablePage]);
 
   useEffect(() => {
     setTablePage(0);

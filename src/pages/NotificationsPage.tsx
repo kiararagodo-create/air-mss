@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle, CheckCircle2, Clock, Loader2, MessageCircle, RotateCcw, Search, X,
@@ -51,18 +51,39 @@ export default function NotificationsPage() {
 
   const [rows, setRows] = useState<AirNotification[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<{ message: string; code?: string } | null>(null);
+const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [page, setPage] = useState(1);
   const [topTab, setTopTab] = useState<"alerts" | "actionlog">("alerts");
   const [smsRef, setSmsRef] = useState<{ ref: AlertRef; severity: string; levelLabel: string; custom: boolean } | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  const [smsWarning, setSmsWarning] = useState<string | null>(null);
   const [smsFailures, setSmsFailures] = useState<SmsFailure[]>([]);
+  // Automatic SMS control state
+// @ts-expect-error
+  const [autoSmsEnabled, setAutoSmsEnabled] = useState(true);
+// @ts-expect-error
+  const [autoSmsPausedUntil, setAutoSmsPausedUntil] = useState<Date | null>(null);
+// @ts-expect-error
+  const [alwaysSendDanger, setAlwaysSendDanger] = useState(true);
+// @ts-expect-error
+  const [sensorFlags, setSensorFlags] = useState({ co2: true, lpg: true, temp: true, humidity: true, offline: true });
+// @ts-expect-error
+  const [lastChangedBy, setLastChangedBy] = useState<string | null>(null);
+// @ts-expect-error
+  const [lastChangedAt, setLastChangedAt] = useState<Date | null>(null);
+// @ts-expect-error
+  const [summaryCards, setSummaryCards] = useState<{ open: number; unhandled: number; smsSent: number; smsSkipped: number } | null>(null);
+  // SMS delivery notice state
+  const [smsDeliveryNotice, setSmsDeliveryNotice] = useState<{ summary: string; details: any[]; expanded: boolean; dismissed: boolean } | null>(null);
+  // Automatic SMS control state
+  // Performance timers
+  const toastRef = useRef<number | null>(null);
 
   function showToast(kind: "ok" | "err", text: string) {
     setToast({ kind, text });
-    window.setTimeout(() => setToast(null), 5000);
+    const t = window.setTimeout(() => setToast(null), 5000);
+    if (toastRef.current != null) clearTimeout(toastRef.current);
+    toastRef.current = t;
   }
 
   const loadSmsFailures = useCallback(async () => {
@@ -88,27 +109,68 @@ export default function NotificationsPage() {
     void loadSmsFailures();
   }, [loadSmsFailures]);
 
+  const loadAutoSmsSettings = useCallback(async () => {
+    const { data: settings } = await supabase
+      .from("sms_alert_settings")
+      .select("auto_sms_enabled, auto_sms_paused_until, always_send_danger, auto_sms_co2, auto_sms_lpg, auto_sms_temp, auto_sms_humidity, auto_sms_offline, updated_by, updated_at")
+      .eq("id", 1)
+      .maybeSingle();
+    if (settings) {
+      setAutoSmsEnabled(settings.auto_sms_enabled ?? true);
+      setAutoSmsPausedUntil(settings.auto_sms_paused_until ? new Date(settings.auto_sms_paused_until) : null);
+      setAlwaysSendDanger(settings.always_send_danger ?? true);
+      setSensorFlags({
+        co2: settings.auto_sms_co2 ?? true,
+        lpg: settings.auto_sms_lpg ?? true,
+        temp: settings.auto_sms_temp ?? true,
+        humidity: settings.auto_sms_humidity ?? true,
+        offline: settings.auto_sms_offline ?? true,
+      });
+      setLastChangedBy(settings.updated_by ? String(settings.updated_by) : null);
+      setLastChangedAt(settings.updated_at ? new Date(settings.updated_at) : null);
+    }
+  }, []);
+
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
     if (role !== "admin") return;
     (async () => {
-      const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-      const { count: lc } = await supabase.from("sms_logs").select("id", { count: "exact", head: true }).eq("status", "skipped_low_credits").gte("sent_at", since);
-      if ((lc ?? 0) > 0) setSmsWarning(`Low SMS credits: ${lc} message(s) skipped in the last 24h.`);
-      else setSmsWarning(null);
+      await loadAutoSmsSettings();
+      // Build the calm SMS delivery notice (one grouped query)
+      const { data: grouped } = await supabase
+        .from("sms_logs")
+        .select("status, provider_response, notification_id")
+        .gte("sent_at", new Date(Date.now() - 24 * 3600 * 1000).toISOString())
+        .in("status", ["skipped_low_credits", "skipped_rate_limited", "skipped_auto_off"]);
+      let counts: Record<string, number> = { "skipped_low_credits": 0, "skipped_rate_limited": 0, "skipped_auto_off": 0 };
+      if (grouped) {
+        for (const row of grouped) counts[row.status] = (counts[row.status] ?? 0) + 1;
+      }
+      const autoTotal = (counts["skipped_low_credits"] ?? 0) + (counts["skipped_rate_limited"] ?? 0) + (counts["skipped_auto_off"] ?? 0);
+      const dangerAuto = 0; // tracked separately from skipped_auto_off
+      const lowCredits = counts["skipped_low_credits"] ?? 0;
+      const rateLimited = counts["skipped_rate_limited"] ?? 0;
+      const autoOff = counts["skipped_auto_off"] ?? 0;
+
+      setSmsDeliveryNotice({
+        summary: `${autoTotal} automatic SMS skipped in the last 24h: low credits ${lowCredits} · rate limit ${rateLimited} · auto SMS off ${autoOff} · danger ${dangerAuto}`,
+        details: [],
+        expanded: false,
+        dismissed: false,
+      });
     })();
-  }, [role, rows]);
+  }, [role, loadAutoSmsSettings, smsDeliveryNotice]);
 
   // Realtime: new alerts / actions / sms outcomes refresh the list live.
   useEffect(() => {
     const ch = supabase.channel("notif-page-live")
-      .on("postgres_changes", { event: "*", schema: "public", table: "air_notifications" }, () => load())
-      .on("postgres_changes", { event: "*", schema: "public", table: "notification_actions" }, () => load())
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sms_logs" }, () => loadSmsFailures())
+      .on("postgres_changes", { event: "*", schema: "public", table: "air_notifications" }, () => { void load(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "notification_actions" }, () => { void load(); })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sms_logs" }, () => { void loadSmsFailures(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [load, loadSmsFailures]);
+  }, [loadSmsFailures]);
 
   const filtered = useMemo(() => {
     const s = filters.search.trim().toLowerCase();
@@ -167,11 +229,7 @@ export default function NotificationsPage() {
           {toast.text}
         </div>
       )}
-      {smsWarning && (
-        <div className="mt-3 rounded-xl px-4 py-3 text-sm font-medium bg-amber-50 border border-amber-200 text-amber-800">
-          {smsWarning}
-        </div>
-      )}
+
       {smsFailures.length > 0 && (
         <div className="mt-3 rounded-xl px-4 py-3 text-sm bg-red-50 border border-red-200 text-red-800">
           <div className="font-bold flex items-center gap-2">
@@ -180,7 +238,7 @@ export default function NotificationsPage() {
           </div>
           <div className="text-[12px] text-red-700 mt-0.5">Every attempt is logged to sms_logs and Action Log. Check iProg token/credits, number format, and recipient SMS settings.</div>
           <ul className="mt-2 mb-0 pl-4 space-y-1">
-            {smsFailures.slice(0, 8).map((f) => (
+            {smsFailures.slice(0, 8).map((f: SmsFailure) => (
               <li key={f.id} className="text-[12px] leading-snug">
                 <span className="font-semibold">{manilaTime(f.sent_at)}</span> — {smsFailureText(f)}
               </li>
@@ -415,6 +473,7 @@ function ActionLog({ rows }: { rows: AirNotification[] }) {
   const [loading, setLoading] = useState(true);
   const [person, setPerson] = useState("all");
   const [action, setAction] = useState("all");
+  const actionLogRef = useRef<any>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -440,12 +499,17 @@ function ActionLog({ rows }: { rows: AirNotification[] }) {
   }, [rows]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Use ref to avoid re-creating realtime subscription on every rows change
   useEffect(() => {
-    const ch = supabase.channel("action-log-live")
+    if (actionLogRef.current) {
+      supabase.removeChannel(actionLogRef.current);
+    }
+    actionLogRef.current = supabase.channel("action-log-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "notification_actions" }, load)
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [load]);
+    return () => { supabase.removeChannel(actionLogRef.current); };
+  }, [load]); // deps only include load (stable via useCallback)
 
   const people = [...new Set(actions.map((a) => a.personnel_name))].sort();
   const filtered = actions.filter((a) =>

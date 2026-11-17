@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  AlertTriangle, CheckCircle2, Clock, Loader2, MessageCircle, RotateCcw, Search, X,
+  AlertTriangle, CheckCircle2, Clock, Loader2, MessageCircle, RotateCcw, Search, SlidersHorizontal, X,
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { useRooms } from "../context/RoomsContext";
@@ -18,9 +18,18 @@ import AlertSmsStatus from "../components/AlertSmsStatus";
 import SendSmsDialog from "../components/SendSmsDialog";
 import { getPermissions } from "../lib/permissions";
 import { sendSmsManual, type AlertRef } from "../lib/alertActions";
+import AutoSmsControlCard from "../components/notifications/AutoSmsControlCard";
+import SmsDeliveryNotice from "../components/notifications/SmsDeliveryNotice";
+import SummaryStrip, { type StatKey } from "../components/notifications/SummaryStrip";
+import {
+  EMPTY_SKIP_SUMMARY, loadAutoSmsSentCount, loadAutoSmsSettings, loadSmsSkipSummary,
+  loadUpdaterName, saveAutoSmsSettings, subscribeAutoSmsSettings,
+  type AutoSmsSettings, type SmsSkipSummary,
+} from "../lib/smsAutoSettings";
 
 const PAGE_SIZE = 20;
 const UNHANDLED_MIN = 10;
+const NOTICE_DISMISS_KEY = "air-notifications-sms-notice-dismissed";
 
 interface Filters {
   severity: string; status: string; deviceId: string; sensor: string;
@@ -40,6 +49,17 @@ function smsFailureText(row: SmsFailure): string {
   return `${who}${phone} · ${alert} · ${row.status} (${mode})${reason}`;
 }
 
+function readNoticeDismissed(): boolean {
+  try { return sessionStorage.getItem(NOTICE_DISMISS_KEY) === "1"; } catch { return false; }
+}
+
+function writeNoticeDismissed(value: boolean): void {
+  try {
+    if (value) sessionStorage.setItem(NOTICE_DISMISS_KEY, "1");
+    else sessionStorage.removeItem(NOTICE_DISMISS_KEY);
+  } catch { /* sessionStorage unavailable (private mode) — ignore */ }
+}
+
 export default function NotificationsPage() {
   const { rooms, thresholds, setSelectedId } = useRooms();
   const { role } = useAuth();
@@ -48,42 +68,40 @@ export default function NotificationsPage() {
   const [params, setParams] = useSearchParams();
   const selectedId = params.get("id") ? Number(params.get("id")) : null;
   const perms = getPermissions((role ?? "") as any);
+  const canEditSettings = role === "admin";
 
   const [rows, setRows] = useState<AirNotification[]>([]);
   const [loading, setLoading] = useState(true);
-const [error, setError] = useState<{ message: string; code?: string } | null>(null);
+  const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [topTab, setTopTab] = useState<"alerts" | "actionlog">("alerts");
   const [smsRef, setSmsRef] = useState<{ ref: AlertRef; severity: string; levelLabel: string; custom: boolean } | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [smsFailures, setSmsFailures] = useState<SmsFailure[]>([]);
+
   // Automatic SMS control state
-// @ts-expect-error
-  const [autoSmsEnabled, setAutoSmsEnabled] = useState(true);
-// @ts-expect-error
-  const [autoSmsPausedUntil, setAutoSmsPausedUntil] = useState<Date | null>(null);
-// @ts-expect-error
-  const [alwaysSendDanger, setAlwaysSendDanger] = useState(true);
-// @ts-expect-error
-  const [sensorFlags, setSensorFlags] = useState({ co2: true, lpg: true, temp: true, humidity: true, offline: true });
-// @ts-expect-error
-  const [lastChangedBy, setLastChangedBy] = useState<string | null>(null);
-// @ts-expect-error
-  const [lastChangedAt, setLastChangedAt] = useState<Date | null>(null);
-// @ts-expect-error
-  const [summaryCards, setSummaryCards] = useState<{ open: number; unhandled: number; smsSent: number; smsSkipped: number } | null>(null);
-  // SMS delivery notice state
-  const [smsDeliveryNotice, setSmsDeliveryNotice] = useState<{ summary: string; details: any[]; expanded: boolean; dismissed: boolean } | null>(null);
-  // Automatic SMS control state
-  // Performance timers
+  const [settings, setSettings] = useState<AutoSmsSettings | null>(null);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [updaterName, setUpdaterName] = useState<string | null>(null);
+
+  // SMS delivery notice + counts
+  const [skipSummary, setSkipSummary] = useState<SmsSkipSummary>(EMPTY_SKIP_SUMMARY);
+  const [smsSent, setSmsSent] = useState(0);
+  const [noticeExpanded, setNoticeExpanded] = useState(false);
+  const [noticeDismissed, setNoticeDismissed] = useState<boolean>(() => readNoticeDismissed());
+
   const toastRef = useRef<number | null>(null);
+  const reloadTimer = useRef<number | null>(null);
+  const countsTimer = useRef<number | null>(null);
 
   function showToast(kind: "ok" | "err", text: string) {
     setToast({ kind, text });
-    const t = window.setTimeout(() => setToast(null), 5000);
-    if (toastRef.current != null) clearTimeout(toastRef.current);
-    toastRef.current = t;
+    if (toastRef.current != null) window.clearTimeout(toastRef.current);
+    toastRef.current = window.setTimeout(() => setToast(null), 5000);
   }
 
   const loadSmsFailures = useCallback(async () => {
@@ -109,74 +127,80 @@ const [error, setError] = useState<{ message: string; code?: string } | null>(nu
     void loadSmsFailures();
   }, [loadSmsFailures]);
 
-  const loadAutoSmsSettings = useCallback(async () => {
-    const { data: settings } = await supabase
-      .from("sms_alert_settings")
-      .select("auto_sms_enabled, auto_sms_paused_until, always_send_danger, auto_sms_co2, auto_sms_lpg, auto_sms_temp, auto_sms_humidity, auto_sms_offline, updated_by, updated_at")
-      .eq("id", 1)
-      .maybeSingle();
-    if (settings) {
-      setAutoSmsEnabled(settings.auto_sms_enabled ?? true);
-      setAutoSmsPausedUntil(settings.auto_sms_paused_until ? new Date(settings.auto_sms_paused_until) : null);
-      setAlwaysSendDanger(settings.always_send_danger ?? true);
-      setSensorFlags({
-        co2: settings.auto_sms_co2 ?? true,
-        lpg: settings.auto_sms_lpg ?? true,
-        temp: settings.auto_sms_temp ?? true,
-        humidity: settings.auto_sms_humidity ?? true,
-        offline: settings.auto_sms_offline ?? true,
-      });
-      setLastChangedBy(settings.updated_by ? String(settings.updated_by) : null);
-      setLastChangedAt(settings.updated_at ? new Date(settings.updated_at) : null);
+  const loadSettings = useCallback(async () => {
+    const s = await loadAutoSmsSettings();
+    if (s) {
+      setSettings(s);
+      if (s.updated_by) setUpdaterName(await loadUpdaterName(s.updated_by));
+      else setUpdaterName(null);
     }
+    setSettingsLoading(false);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const loadCounts = useCallback(async () => {
+    const [summary, sent] = await Promise.all([loadSmsSkipSummary(), loadAutoSmsSentCount()]);
+    setSkipSummary(summary);
+    setSmsSent(sent);
+  }, []);
 
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void loadSettings(); }, [loadSettings]);
+  useEffect(() => subscribeAutoSmsSettings(() => { void loadSettings(); }), [loadSettings]);
   useEffect(() => {
-    if (role !== "admin") return;
-    (async () => {
-      await loadAutoSmsSettings();
-      // Build the calm SMS delivery notice (one grouped query)
-      const { data: grouped } = await supabase
-        .from("sms_logs")
-        .select("status, provider_response, notification_id")
-        .gte("sent_at", new Date(Date.now() - 24 * 3600 * 1000).toISOString())
-        .in("status", ["skipped_low_credits", "skipped_rate_limited", "skipped_auto_off"]);
-      let counts: Record<string, number> = { "skipped_low_credits": 0, "skipped_rate_limited": 0, "skipped_auto_off": 0 };
-      if (grouped) {
-        for (const row of grouped) counts[row.status] = (counts[row.status] ?? 0) + 1;
-      }
-      const autoTotal = (counts["skipped_low_credits"] ?? 0) + (counts["skipped_rate_limited"] ?? 0) + (counts["skipped_auto_off"] ?? 0);
-      const dangerAuto = 0; // tracked separately from skipped_auto_off
-      const lowCredits = counts["skipped_low_credits"] ?? 0;
-      const rateLimited = counts["skipped_rate_limited"] ?? 0;
-      const autoOff = counts["skipped_auto_off"] ?? 0;
+    void loadCounts();
+    const t = window.setInterval(() => { void loadCounts(); }, 60_000);
+    return () => window.clearInterval(t);
+  }, [loadCounts]);
 
-      setSmsDeliveryNotice({
-        summary: `${autoTotal} automatic SMS skipped in the last 24h: low credits ${lowCredits} · rate limit ${rateLimited} · auto SMS off ${autoOff} · danger ${dangerAuto}`,
-        details: [],
-        expanded: false,
-        dismissed: false,
-      });
-    })();
-  }, [role, loadAutoSmsSettings, smsDeliveryNotice]);
+  // Realtime: debounce the reload so a burst of rows changes triggers one fetch.
+  const scheduleReload = useCallback(() => {
+    if (reloadTimer.current != null) window.clearTimeout(reloadTimer.current);
+    reloadTimer.current = window.setTimeout(() => { void load(); }, 500);
+  }, [load]);
 
-  // Realtime: new alerts / actions / sms outcomes refresh the list live.
+  const scheduleCounts = useCallback(() => {
+    if (countsTimer.current != null) window.clearTimeout(countsTimer.current);
+    countsTimer.current = window.setTimeout(() => { void loadCounts(); }, 500);
+  }, [loadCounts]);
+
   useEffect(() => {
     const ch = supabase.channel("notif-page-live")
-      .on("postgres_changes", { event: "*", schema: "public", table: "air_notifications" }, () => { void load(); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "notification_actions" }, () => { void load(); })
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sms_logs" }, () => { void loadSmsFailures(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "air_notifications" }, scheduleReload)
+      .on("postgres_changes", { event: "*", schema: "public", table: "notification_actions" }, scheduleReload)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sms_logs" }, () => { void loadSmsFailures(); scheduleCounts(); })
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [loadSmsFailures]);
+    return () => {
+      void supabase.removeChannel(ch);
+      if (reloadTimer.current != null) window.clearTimeout(reloadTimer.current);
+      if (countsTimer.current != null) window.clearTimeout(countsTimer.current);
+    };
+  }, [scheduleReload, scheduleCounts, loadSmsFailures]);
 
-  const filtered = useMemo(() => {
+  // Clear the toast timer on unmount.
+  useEffect(() => () => { if (toastRef.current != null) window.clearTimeout(toastRef.current); }, []);
+
+  // Optimistic settings update with rollback; errors are shown inside the card.
+  const updateSettings = useCallback((patch: Partial<AutoSmsSettings>) => {
+    const prev = settings;
+    setSettingsError(null);
+    setSettingsSaving(true);
+    setSettings(prev ? { ...prev, ...patch, updated_at: new Date().toISOString() } : prev);
+    void (async () => {
+      const res = await saveAutoSmsSettings(patch);
+      setSettingsSaving(false);
+      if (!res.ok) {
+        setSettings(prev);
+        setSettingsError(res.error ?? "Could not save. Please try again.");
+        return;
+      }
+      void loadSettings();
+    })();
+  }, [settings, loadSettings]);
+
+  const nonStatusFiltered = useMemo(() => {
     const s = filters.search.trim().toLowerCase();
     return rows.filter((r) => {
       if (filters.severity !== "all" && r.severity !== filters.severity) return false;
-      if (filters.status !== "all" && r.status !== filters.status) return false;
       if (filters.deviceId !== "all" && r.device_id !== filters.deviceId) return false;
       if (filters.sensor !== "all" && r.sensor_type !== filters.sensor) return false;
       if (filters.from && r.created_at < new Date(filters.from).toISOString()) return false;
@@ -189,18 +213,72 @@ const [error, setError] = useState<{ message: string; code?: string } | null>(nu
     });
   }, [rows, filters]);
 
+  const statusCounts = useMemo(() => {
+    const counts = { all: nonStatusFiltered.length, open: 0, acknowledged: 0, resolved: 0 };
+    for (const r of nonStatusFiltered) {
+      if (r.status === "open") counts.open += 1;
+      else if (r.status === "acknowledged") counts.acknowledged += 1;
+      else if (r.status === "resolved") counts.resolved += 1;
+    }
+    return counts;
+  }, [nonStatusFiltered]);
+
+  const filtered = useMemo(
+    () => (filters.status === "all" ? nonStatusFiltered : nonStatusFiltered.filter((r) => r.status === filters.status)),
+    [nonStatusFiltered, filters.status],
+  );
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (filters.severity !== "all") n += 1;
+    if (filters.status !== "all") n += 1;
+    if (filters.deviceId !== "all") n += 1;
+    if (filters.sensor !== "all") n += 1;
+    if (filters.from) n += 1;
+    if (filters.to) n += 1;
+    if (filters.search.trim()) n += 1;
+    return n;
+  }, [filters]);
+
+  const stats = useMemo(() => ({
+    open: rows.filter((r) => r.status === "open").length,
+    unhandled: rows.filter((r) => unhandledMinutes(r, UNHANDLED_MIN)).length,
+    sms_sent: smsSent,
+    smsSkipped: skipSummary.total,
+  }), [rows, smsSent, skipSummary.total]);
+
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   useEffect(() => { setPage(1); }, [filters]);
 
   const selected = selectedId ? rows.find((r) => r.id === selectedId) ?? null : null;
   // PGRST205 "Could not find the table 'public.air_notifications' in the
-  // schema cache" = the migration was never run in the live DB (DEPLOY-ALL.sql
-  // predates it). It is a setup step, not a crash — say so plainly.
+  // schema cache" = the migration was never run in the live DB. Setup step.
   const isMissingTable = !!error && (
     error.code === "PGRST205" ||
     /could not find the table.*air_notifications/i.test(error.message)
   );
+
+  function selectStat(kind: StatKey) {
+    if (kind === "open" || kind === "unhandled") {
+      setFilters((f) => ({ ...f, status: "open" }));
+    } else if (kind === "smsSkipped") {
+      setNoticeDismissed(false);
+      writeNoticeDismissed(false);
+      setNoticeExpanded(true);
+    } else {
+      setTopTab("alerts");
+    }
+  }
+
+  const activeStat: StatKey | null = filters.status === "open" ? "open" : null;
+
+  const statusTabs: { value: string; label: string; count: number }[] = [
+    { value: "all", label: "All", count: statusCounts.all },
+    { value: "open", label: "Open", count: statusCounts.open },
+    { value: "acknowledged", label: "Acknowledged", count: statusCounts.acknowledged },
+    { value: "resolved", label: "Resolved", count: statusCounts.resolved },
+  ];
 
   return (
     <div>
@@ -230,8 +308,29 @@ const [error, setError] = useState<{ message: string; code?: string } | null>(nu
         </div>
       )}
 
+      <AutoSmsControlCard
+        settings={settings}
+        loading={settingsLoading}
+        canEdit={canEditSettings}
+        updaterName={updaterName}
+        saving={settingsSaving}
+        saveError={settingsError}
+        onChange={updateSettings}
+      />
+
+      <SummaryStrip stats={stats} active={activeStat} onSelect={selectStat} />
+
+      <SmsDeliveryNotice
+        summary={skipSummary}
+        expanded={noticeExpanded}
+        onToggleExpanded={() => setNoticeExpanded((v) => !v)}
+        dismissed={noticeDismissed}
+        onDismiss={() => { setNoticeDismissed(true); writeNoticeDismissed(true); }}
+        onOpenAlert={(id) => setParams({ id: String(id) })}
+      />
+
       {smsFailures.length > 0 && (
-        <div className="mt-3 rounded-xl px-4 py-3 text-sm bg-red-50 border border-red-200 text-red-800">
+        <div className="mt-4 rounded-xl px-4 py-3 text-sm bg-red-50 border border-red-200 text-red-800">
           <div className="font-bold flex items-center gap-2">
             <AlertTriangle className="w-4 h-4" />
             SMS send failure{smsFailures.length === 1 ? "" : "s"} (last 48h)
@@ -260,12 +359,30 @@ const [error, setError] = useState<{ message: string; code?: string } | null>(nu
       {topTab === "actionlog" && <ActionLog rows={rows} />}
 
       {topTab === "alerts" && (<>
-      {/* Filters */}
-      <div className="bg-white border border-slate-200 rounded-xl p-4 mt-4 grid grid-cols-2 md:grid-cols-4 gap-2.5">
+      {/* Filter toolbar */}
+      <div className="mt-4 flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={() => setFiltersOpen((v) => !v)}
+          className="md:hidden inline-flex items-center gap-1.5 text-[12px] font-semibold text-slate-600 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-50"
+          aria-expanded={filtersOpen}
+        >
+          <SlidersHorizontal size={13} /> Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
+        </button>
+        {activeFilterCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setFilters(EMPTY_FILTERS)}
+            className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-teal-700 border border-teal-200 rounded-lg px-3 py-1.5 hover:bg-teal-50"
+          >
+            <X size={13} /> Clear filters ({activeFilterCount})
+          </button>
+        )}
+      </div>
+
+      <div className={`${filtersOpen ? "grid" : "hidden"} md:grid bg-white border border-slate-200 rounded-xl p-4 mt-3 grid-cols-2 md:grid-cols-4 gap-2.5`}>
         <FilterSelect label="Severity" value={filters.severity} onChange={(v) => setFilters({ ...filters, severity: v })}
           options={[["all", "All"], ["warning", "Warning"], ["high", "High"], ["danger", "Danger"], ["critical", "Critical"], ["info", "Info"]]} />
-        <FilterSelect label="Status" value={filters.status} onChange={(v) => setFilters({ ...filters, status: v })}
-          options={[["all", "All"], ["open", "Open"], ["acknowledged", "Acknowledged"], ["resolved", "Resolved"]]} />
         <FilterSelect label="Room / Device" value={filters.deviceId} onChange={(v) => setFilters({ ...filters, deviceId: v })}
           options={[["all", "All rooms"], ...rooms.map((r): [string, string] => [r.id, `${r.name} (${r.id})`])]} />
         <FilterSelect label="Sensor" value={filters.sensor} onChange={(v) => setFilters({ ...filters, sensor: v })}
@@ -278,13 +395,33 @@ const [error, setError] = useState<{ message: string; code?: string } | null>(nu
           <input type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })}
             className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-1.5 text-[13px]" />
         </label>
-        <label className="text-[11px] font-bold text-slate-500 col-span-2 flex flex-col justify-end">Search
+        <label className="text-[11px] font-bold text-slate-500 col-span-2 md:col-span-2 flex flex-col justify-end">Search
           <span className="relative mt-1 block">
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
             <input value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })}
               placeholder="Room, device, message…" className="w-full border border-slate-200 rounded-lg pl-8 pr-2 py-1.5 text-[13px]" />
           </span>
         </label>
+      </div>
+
+      {/* Segmented status tabs */}
+      <div className="mt-3 flex items-center gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white p-1">
+        {statusTabs.map((t) => {
+          const isActive = filters.status === t.value;
+          return (
+            <button
+              key={t.value}
+              type="button"
+              onClick={() => setFilters((f) => ({ ...f, status: t.value }))}
+              aria-pressed={isActive}
+              className={`flex-1 min-w-[92px] whitespace-nowrap rounded-lg px-3 py-1.5 text-[12.5px] font-semibold transition-colors motion-reduce:transition-none ${
+                isActive ? "bg-teal-600 text-white" : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              {t.label} <span className={isActive ? "text-teal-100" : "text-slate-400"}>({t.count})</span>
+            </button>
+          );
+        })}
       </div>
 
       {isMissingTable ? (
@@ -309,7 +446,7 @@ const [error, setError] = useState<{ message: string; code?: string } | null>(nu
       {liveAlerts.length > 0 && (
         <div className="bg-white border border-red-200 rounded-xl mt-4 overflow-hidden">
           <div className="px-4 py-2.5 border-b border-red-100 text-[11px] font-bold tracking-wide text-red-600 uppercase flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-pulse" />
+            <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-pulse motion-reduce:animate-none" />
             Live alerts — act now ({liveAlerts.length})
           </div>
           {liveAlerts.map((a) => {
@@ -365,17 +502,48 @@ const [error, setError] = useState<{ message: string; code?: string } | null>(nu
       {/* Table */}
       <div className="bg-white border border-slate-200 rounded-xl mt-4 overflow-hidden">
         {loading ? (
-          <div className="px-4 py-10 flex items-center justify-center gap-2 text-slate-400 text-sm">
-            <Loader2 className="w-4 h-4 animate-spin" /> Loading…
-          </div>
-        ) : pageRows.length === 0 ? (
-          <div className="px-4 py-10 text-center text-slate-400 text-sm">
-            {isMissingTable ? "No saved alerts yet — run the setup SQL above, then Refresh." : "No notifications yet."}
-          </div>
-        ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-[13px]">
               <thead>
+                <tr className="text-[11px] uppercase tracking-wide text-slate-400 border-b border-slate-100">
+                  <th className="px-4 py-2.5">Alert</th>
+                  <th className="px-4 py-2.5">Level</th>
+                  <th className="px-4 py-2.5">Reading</th>
+                  <th className="px-4 py-2.5">Status</th>
+                  <th className="px-4 py-2.5">Handled by</th>
+                  <th className="px-4 py-2.5">Time</th>
+                  <th className="px-4 py-2.5">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <tr key={i} className="border-b border-slate-50">
+                    {Array.from({ length: 7 }).map((__, j) => (
+                      <td key={j} className="px-4 py-3">
+                        <div className="h-3 w-full max-w-[120px] animate-pulse motion-reduce:animate-none rounded bg-slate-100" />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : pageRows.length === 0 ? (
+          <div className="px-4 py-12 flex flex-col items-center justify-center gap-2 text-center">
+            <CheckCircle2 className="w-7 h-7 text-slate-300" />
+            <div className="text-slate-500 text-sm font-medium">
+              {isMissingTable ? "No saved alerts yet — run the setup SQL above, then Refresh." : activeFilterCount > 0 ? "No alerts match these filters." : "No notifications yet."}
+            </div>
+            {activeFilterCount > 0 && !isMissingTable && (
+              <button type="button" onClick={() => setFilters(EMPTY_FILTERS)} className="text-[12px] font-semibold text-teal-700 hover:underline">
+                Clear filters
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="max-h-[70vh] overflow-auto">
+            <table className="w-full text-left text-[13px]">
+              <thead className="sticky top-0 z-10 bg-white">
                 <tr className="text-[11px] uppercase tracking-wide text-slate-400 border-b border-slate-100">
                   <th className="px-4 py-2.5">Alert</th>
                   <th className="px-4 py-2.5">Level</th>
@@ -473,7 +641,10 @@ function ActionLog({ rows }: { rows: AirNotification[] }) {
   const [loading, setLoading] = useState(true);
   const [person, setPerson] = useState("all");
   const [action, setAction] = useState("all");
-  const actionLogRef = useRef<any>(null);
+  // Keep the latest rows in a ref so load() is stable and the realtime
+  // subscription is created once, not on every rows change.
+  const rowsRef = useRef(rows);
+  useEffect(() => { rowsRef.current = rows; }, [rows]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -486,7 +657,7 @@ function ActionLog({ rows }: { rows: AirNotification[] }) {
         return;
       }
       const raw = ((data as NotificationAction[]) ?? []);
-      const byId = new Map(rows.map((r) => [r.id, r]));
+      const byId = new Map(rowsRef.current.map((r) => [r.id, r]));
       const missingIds = [...new Set(raw.map((a) => a.notification_id).filter((id) => !byId.has(id)))];
       if (missingIds.length > 0) {
         const { data: extra } = await supabase.from("air_notifications").select("*").in("id", missingIds);
@@ -496,20 +667,16 @@ function ActionLog({ rows }: { rows: AirNotification[] }) {
     } finally {
       setLoading(false);
     }
-  }, [rows]);
+  }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { void load(); }, [load]);
 
-  // Use ref to avoid re-creating realtime subscription on every rows change
   useEffect(() => {
-    if (actionLogRef.current) {
-      supabase.removeChannel(actionLogRef.current);
-    }
-    actionLogRef.current = supabase.channel("action-log-live")
-      .on("postgres_changes", { event: "*", schema: "public", table: "notification_actions" }, load)
+    const ch = supabase.channel("action-log-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "notification_actions" }, () => { void load(); })
       .subscribe();
-    return () => { supabase.removeChannel(actionLogRef.current); };
-  }, [load]); // deps only include load (stable via useCallback)
+    return () => { void supabase.removeChannel(ch); };
+  }, [load]);
 
   const people = [...new Set(actions.map((a) => a.personnel_name))].sort();
   const filtered = actions.filter((a) =>
@@ -526,7 +693,7 @@ function ActionLog({ rows }: { rows: AirNotification[] }) {
           options={[["all", "All actions"], ["acknowledge", "Acknowledge"], ["on_my_way", "On my way"], ["resolved", "Resolved"], ["false_alarm", "False alarm"], ["repaired", "Repaired"], ["sms_sent", "SMS sent"]]} />
       </div>
       {loading ? (
-        <div className="px-4 py-10 flex items-center justify-center gap-2 text-slate-400 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
+        <div className="px-4 py-10 flex items-center justify-center gap-2 text-slate-400 text-sm"><Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" /> Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="px-4 py-10 text-center text-slate-400 text-sm">No actions yet.</div>
       ) : (
@@ -590,7 +757,7 @@ function NotificationDetail({ n, thresholds, onClose, role, onSms }: {
     setActions((a as NotificationAction[]) ?? []);
   }, [n.id]);
 
-  useEffect(() => { loadDetail(); }, [loadDetail]);
+  useEffect(() => { void loadDetail(); }, [loadDetail]);
 
   async function resend(s?: SmsLog) {
     setResending(s?.id ?? n.id);

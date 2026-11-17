@@ -406,6 +406,60 @@ async function sendFallbackEmail(admin: Admin, notification: any, reason: string
   }
 }
 
+/**
+ * STEP 4 guard: decide whether an *automatic* SMS is allowed under the admin's
+ * auto-SMS controls (master switch, pause window, per-sensor flags, danger
+ * lock). Returns null to allow the send, or a reason + human-readable detail to
+ * block it.
+ *
+ * Fails OPEN: a settings read error, an unknown sensor, or a missing column all
+ * fall through to today's behaviour so a broken settings row can never silence
+ * emergency texts. Explicit human actions (manual resend) bypass the guard.
+ */
+function autoSmsBlock(
+  settings: Awaited<ReturnType<typeof loadSmsSettings>>,
+  notification: { severity?: string | null; level_label?: string | null; sensor_type?: string | null },
+  reason: string,
+): { reason: string; detail: string } | null {
+  // Manual resends are explicit human actions - never suppressed here.
+  if (reason === "manual_resend_auto" || reason === "backfill") return null;
+
+  // A failed settings read must not stop alerts; behave as if controls are on.
+  if (settings.error) return null;
+
+  const danger = isDangerLevel(String(notification.severity ?? ""), String(notification.level_label ?? ""));
+  if (danger && settings.alwaysSendDanger) return null;
+
+  if (!settings.autoSmsEnabled) {
+    return { reason: "master_off", detail: "Master switch off" };
+  }
+
+  if (settings.autoSmsPausedUntil) {
+    const until = new Date(settings.autoSmsPausedUntil);
+    if (Number.isFinite(until.getTime()) && new Date() < until) {
+      return { reason: "paused_until", detail: `Paused until ${manilaTime(until)}` };
+    }
+  }
+
+  // Offline alerts are stored with sensor_type "device"; the per-sensor flag
+  // for them is auto_sms_offline. Any unrecognised sensor is allowed.
+  const raw = String(notification.sensor_type ?? "offline");
+  const sensor = raw === "device" || raw === "offline" ? "offline" : raw;
+  const flags: Record<string, boolean> = {
+    co2: settings.autoSmsCo2,
+    lpg: settings.autoSmsLpg,
+    temp: settings.autoSmsTemp,
+    humidity: settings.autoSmsHumidity,
+    offline: settings.autoSmsOffline,
+  };
+  if (flags[sensor] === false) {
+    const label = sensor === "offline" ? "device offline" : sensor;
+    return { reason: "sensor_off", detail: `Sensor ${label} off` };
+  }
+
+  return null;
+}
+
 async function sendAutoSmsForAlert(
   admin: Admin,
   params: {
@@ -463,6 +517,18 @@ async function sendAutoSmsForAlert(
       provider_response: `SMS not routed for ${channel} (${decision.reason})`, provider: cfg.provider, is_auto: true,
     });
     return { attempted: false, reason: decision.reason, emailFallback: decision.email };
+  }
+
+  // Automatic SMS controls (STEP 4): honour the admin's on/off, pause and
+  // per-sensor flags before any provider call. Blocked sends consume no
+  // iProgSMS credits; the alert row/dashboard/email are unaffected.
+  const blocked = autoSmsBlock(settings, n, params.reason);
+  if (blocked) {
+    await insertSmsLog(admin, {
+      notification_id: n.id, message: params.message, status: "skipped_auto_off",
+      provider_response: blocked.detail, provider: cfg.provider, is_auto: true,
+    });
+    return { attempted: false, reason: blocked.reason, emailFallback: false };
   }
 
   // Cooldown: one SMS when an alert opens; reminders at most every interval.
@@ -574,74 +640,6 @@ async function sendAutoSmsForAlert(
 
   let attempted = false;
   let creditsExhausted = false;
-
-  // --- Automatic SMS guard (STEP 4) ---
-  // Load settings with service role; if read fails, proceed open-air.
-  const settings = await loadSmsSettings(admin);
-  if (settings.error) {
-    console.error(`air-alerts: failed to load SMS settings for alert ${n.id}:`, settings.error);
-  } else {
-    const isDangerCritical = /danger|critical/i.test(n.severity);
-    const autoSmsEnabled = settings.autoSmsEnabled;
-    const autoSmsPausedUntil = settings.autoSmsPausedUntil ? new Date(settings.autoSmsPausedUntil) : null;
-    const alwaysSendDanger = settings.alwaysSendDanger;
-    const sensorFlags = {
-      co2: settings.autoSmsCo2,
-      lpg: settings.autoSmsLpg,
-      temp: settings.autoSmsTemp,
-      humidity: settings.autoSmsHumidity,
-      offline: settings.autoSmsOffline,
-    };
-
-    // Danger/critical with always-on lock: send as before regardless of master switch.
-    if (isDangerCritical && alwaysSendDanger) {
-      // allow send below — fall through to normal flow
-    } else {
-      // Master switch off → block, log skipped_auto_off
-      if (!autoSmsEnabled) {
-        await insertSmsLog(admin, {
-          notification_id: n.id,
-          message: params.message,
-          status: "skipped_auto_off",
-          provider_response: "Master switch off",
-          provider: cfg.provider,
-          is_auto: true,
-        });
-        return { attempted: false, reason: "master_off", emailFallback: false };
-      }
-      // Paused until a future time → block, log skipped_auto_off
-      if (autoSmsPausedUntil && new Date() < autoSmsPausedUntil) {
-        const pauseLabel = manilaTime(autoSmsPausedUntil);
-        await insertSmsLog(admin, {
-          notification_id: n.id,
-          message: params.message,
-          status: "skipped_auto_off",
-          provider_response: `Paused until ${pauseLabel}`,
-          provider: cfg.provider,
-          is_auto: true,
-        });
-        return { attempted: false, reason: "paused_until", emailFallback: false };
-      }
-      // Sensor flag off → block, log skipped_auto_off
-      // Determine which sensor flag controls this alert's SMS based on severity/level.
-      // Use the same sensor evaluation as the offline config.
-      const sensorForAlert = n.sensor_type ?? "offline";
-      const sensorOff = sensorFlags[sensorForAlert];
-      if (sensorForAlert === "offline" ? !sensorFlags.offline : !sensorForAlert || !sensorOff) {
-        const sensorName = sensorForAlert === "offline" ? "device offline" : sensorForAlert;
-        await insertSmsLog(admin, {
-          notification_id: n.id,
-          message: params.message,
-          status: "skipped_auto_off",
-          provider_response: `Sensor ${sensorName} off`,
-          provider: cfg.provider,
-          is_auto: true,
-        });
-        return { attempted: false, reason: "sensor_off", emailFallback: false };
-      }
-    }
-  }
-  // --- End Automatic SMS guard ---
 
   for (const r of recipients) {
     if (creditsExhausted) {
@@ -1099,26 +1097,38 @@ async function checkOffline(admin: Admin) {
   // sweep -> one SMS instead of one per device.
   const brownoutCovered = new Set<string>();
   if (brownoutCandidates.length >= BROWNOUT_MIN_DEVICES) {
-    const recipients = await getSmsRecipients(admin).catch(() => [] as any[]);
     const body = `Possible power outage: ${brownoutCandidates.length} devices offline (${brownoutCandidates.map((c) => c.roomName).join(", ")}). Check the site.`;
     const cfg = getSmsConfig();
-    let sent = 0;
-    for (const r of recipients) {
-      const phone = normalizeForProviderSend(r.contact_number);
-      if (!phone) continue;
-      const res = await sendSms({ to: phone, message: body }, true);
+    // A brownout is a grouped offline event, so it obeys the same auto-SMS
+    // controls (master switch / pause / auto_sms_offline) as a single offline.
+    const blocked = autoSmsBlock(settings, { severity: "warning", level_label: "Offline", sensor_type: "device" }, "offline");
+    if (blocked) {
       await insertSmsLog(admin, {
-        notification_id: null, personnel_id: r.id, recipient_name: r.name, recipient_role: r.role,
-        phone: r.contact_number, message: body,
-        status: res.ok ? "submitted" : "failed",
-        provider_response: sanitizeProviderResponse(res.error ?? (typeof res.raw === "string" ? res.raw : JSON.stringify(res.raw ?? {})), cfg.iprog.token),
-        provider: res.provider ?? cfg.provider, provider_message_id: res.providerMessageId ?? null,
-        provider_status: res.status ?? (res.ok ? "submitted" : "failed"), is_auto: true,
+        notification_id: null, message: body, status: "skipped_auto_off",
+        provider_response: blocked.detail, provider: cfg.provider, is_auto: true,
       });
-      if (res.ok) sent += 1;
+      console.log(`air-alerts: brownout SMS suppressed (${blocked.reason}) devices=${brownoutCandidates.length}`);
+      for (const c of brownoutCandidates) brownoutCovered.add(c.deviceId);
+    } else {
+      const recipients = await getSmsRecipients(admin).catch(() => [] as any[]);
+      let sent = 0;
+      for (const r of recipients) {
+        const phone = normalizeForProviderSend(r.contact_number);
+        if (!phone) continue;
+        const res = await sendSms({ to: phone, message: body }, true);
+        await insertSmsLog(admin, {
+          notification_id: null, personnel_id: r.id, recipient_name: r.name, recipient_role: r.role,
+          phone: r.contact_number, message: body,
+          status: res.ok ? "submitted" : "failed",
+          provider_response: sanitizeProviderResponse(res.error ?? (typeof res.raw === "string" ? res.raw : JSON.stringify(res.raw ?? {})), cfg.iprog.token),
+          provider: res.provider ?? cfg.provider, provider_message_id: res.providerMessageId ?? null,
+          provider_status: res.status ?? (res.ok ? "submitted" : "failed"), is_auto: true,
+        });
+        if (res.ok) sent += 1;
+      }
+      console.log(`air-alerts: brownout SMS sent=${sent} devices=${brownoutCandidates.length}`);
+      for (const c of brownoutCandidates) brownoutCovered.add(c.deviceId);
     }
-    console.log(`air-alerts: brownout SMS sent=${sent} devices=${brownoutCandidates.length}`);
-    for (const c of brownoutCandidates) brownoutCovered.add(c.deviceId);
   }
 
   // Unacknowledged reminder: resend for open alerts still unacknowledged after the reminder interval.

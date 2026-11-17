@@ -68,6 +68,9 @@ export interface Database {
           co2: number | null;
           lpg: number | null;
           alert_count: number | null;
+          ventilation_type: string | null;
+          ventilation_ach: number | null;
+          occupancy_duration_h: number | null;
           last_seen: string | null;
           created_at: string;
         };
@@ -80,6 +83,9 @@ export interface Database {
           co2: number | null;
           lpg: number | null;
           alert_count?: number | null;
+          ventilation_type?: string | null;
+          ventilation_ach?: number | null;
+          occupancy_duration_h?: number | null;
           last_seen?: string | null;
           created_at?: string;
         };
@@ -92,6 +98,9 @@ export interface Database {
           co2?: number | null;
           lpg?: number | null;
           alert_count?: number | null;
+          ventilation_type?: string | null;
+          ventilation_ach?: number | null;
+          occupancy_duration_h?: number | null;
           last_seen?: string | null;
           created_at?: string;
         };

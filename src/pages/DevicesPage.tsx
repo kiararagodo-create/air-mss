@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Activity,
   Box,
@@ -12,8 +12,11 @@ import {
 import { NO_DATA_LABEL, Room, Thresholds, getStatus, volumeOf } from "../data/Data";
 import { metricSeverity, SEVERITY_TONE } from "../lib/thresholdConfig";
 import { roomLastSeen } from "../lib/deviceConnectivity";
+import { VentilationType } from "../lib/ventilationConfig";
 import { ConnectionPill, LastSeenLine } from "../components/DeviceConnection";
 import { Badge, badgeStyles } from "../ui";
+import { VentilationFields } from "../components/VentilationFields";
+import { validateVentilationConfig } from "../lib/ventilationConfig";
 
 type User = {
   id: string;
@@ -97,11 +100,29 @@ function AddDeviceModal({
     // a fabricated "400 ppm CO2 / 0 ppm LPG" until its first real reading
     // arrived. They are now left null so the device shows "No sensor data
     // recorded" until the ESP32 actually reports something.
+    ventilationType: "unknown" as VentilationType,
+    ventilationAch: undefined as number | undefined,
+    occupancyDurationHours: 2 as number,
   });
+
+  const [ventilationErrors, setVentilationErrors] = useState<string[]>([]);
 
   const updateField = (field: string, value: any) => {
     setForm((prev: any) => ({ ...prev, [field]: value }));
   };
+
+  const validateVentilationForm = () => {
+    const type = form.ventilationType;
+    const ach = form.ventilationAch;
+    const duration = form.occupancyDurationHours;
+    const errors = validateVentilationConfig(type, ach, duration);
+    setVentilationErrors(errors);
+  };
+
+  // Initial validation
+  useEffect(() => {
+    validateVentilationForm();
+  }, [form.ventilationType, form.ventilationAch, form.occupancyDurationHours]);
 
   return (
     <div
@@ -220,6 +241,21 @@ function AddDeviceModal({
               ))}
             </select>
           </label>
+
+          {/* Ventilation fields */}
+<VentilationFields
+              ventilationType={form.ventilationType as VentilationType | undefined}
+              setVentilationType={(t: VentilationType | undefined) => setForm((prev: any) => ({ ...prev, ventilationType: t }))}
+              ventilationAch={form.ventilationAch}
+              setVentilationAch={(a: number | null | undefined) => setForm((prev: any) => ({ ...prev, ventilationAch: a }))}
+              occupancyDurationHours={form.occupancyDurationHours}
+              setOccupancyDurationHours={(d: number | undefined) => setForm((prev: any) => ({ ...prev, occupancyDurationHours: d }))}
+              length={Number(form.length ?? 6)}
+              width={Number(form.width ?? 4)}
+              height={Number(form.height ?? 3)}
+              errors={ventilationErrors}
+              disabled={false}
+            />
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
           <button
@@ -233,6 +269,9 @@ function AddDeviceModal({
               color: "#475569",
               cursor: "pointer",
               fontWeight: 700,
+              // Disabled when ventilation fields are invalid
+              opacity: ventilationErrors.length > 0 ? 0.5 : 1,
+              pointerEvents: ventilationErrors.length > 0 ? "none" : "auto",
             }}
           >
             Cancel
@@ -243,12 +282,13 @@ function AddDeviceModal({
             style={{
               borderRadius: 8,
               padding: "10px 14px",
-              background: "#0d9488",
+              background: ventilationErrors.length > 0 ? "#94a3b8" : "#0d9488",
               border: "none",
               color: "#fff",
-              cursor: "pointer",
+              cursor: ventilationErrors.length > 0 ? "not-allowed" : "pointer",
               fontWeight: 700,
             }}
+            disabled={ventilationErrors.length > 0}
           >
             Add Device
           </button>

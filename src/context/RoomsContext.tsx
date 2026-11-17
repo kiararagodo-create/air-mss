@@ -63,6 +63,9 @@ interface RoomRow {
   last_seen: string | null;
   installed_at: string | null;
   siren_muted: boolean | null;
+  ventilation_type: string | null;
+  ventilation_ach: number | null;
+  occupancy_duration_h: number | null;
 }
 
 function rowToRoom(row: RoomRow): Room {
@@ -99,6 +102,10 @@ function rowToRoom(row: RoomRow): Room {
     alertCount: row.alert_count ?? 0,
     installedAt: row.installed_at ?? new Date().toISOString().slice(0, 10),
     sirenMuted: row.siren_muted ?? false,
+    // Ventilation configuration from the rooms table
+    ventilationType: row.ventilation_type ?? undefined,
+    ventilationAch: row.ventilation_ach ?? undefined,
+    occupancyDurationHours: row.occupancy_duration_h ?? undefined,
   };
 }
 
@@ -113,6 +120,10 @@ function roomToInsertRow(form: RoomForm) {
     length: Number(form.length ?? 6),
     width: Number(form.width ?? 4),
     height: Number(form.height ?? 3),
+    // Ventilation configuration defaults (camelCase from Room type)
+    ventilationType: form.ventilationType ?? "unknown",
+    ventilationAch: form.ventilationAch ?? null,
+    occupancyDurationHours: form.occupancyDurationHours ?? 2,
     // co2 / lpg are intentionally absent. They are not sensor measurements, and
     // writing a default here is what previously caused a newly registered
     // device to display a fabricated "400 ppm CO2 / 0 ppm LPG".

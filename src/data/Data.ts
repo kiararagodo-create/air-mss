@@ -95,6 +95,10 @@ export interface Room {
   // column in Supabase's "rooms" table). Muting silences the physical
   // buzzer only - readings/severity/dashboard alerts keep working normally.
   sirenMuted: boolean;
+  // Ventilation configuration (from public.rooms table CHECK constraints)
+  ventilationType?: string;
+  ventilationAch?: number | null;
+  occupancyDurationHours?: number | null;
 }
 
 export interface SeverityMeta {

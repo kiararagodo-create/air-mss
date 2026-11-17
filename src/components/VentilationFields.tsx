@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { type VentilationType } from "../lib/ventilationConfig";
+import { type VentilationType, ventilationTypeLabels } from "../lib/ventilationConfig";
 import { getVolumeText } from "../lib/ventilationConfig";
 import { roomVolumeM3 } from "../lib/co2Occupancy";
 
@@ -38,6 +38,15 @@ export function VentilationFields({
     setVolumeVisible(true);
   }
 
+  const options = [
+    { value: "window_ac" as VentilationType, label: ventilationTypeLabels.window_ac },
+    { value: "split_ac" as VentilationType, label: ventilationTypeLabels.split_ac },
+    { value: "central_ac_outdoor_air" as VentilationType, label: ventilationTypeLabels.central_ac_outdoor_air },
+    { value: "natural" as VentilationType, label: ventilationTypeLabels.natural },
+    { value: "mechanical" as VentilationType, label: ventilationTypeLabels.mechanical },
+    { value: "unknown" as VentilationType, label: ventilationTypeLabels.unknown },
+  ];
+
   return (
     <div className="space-y-4">
       {/* Ventilation Type Select */}
@@ -48,22 +57,17 @@ export function VentilationFields({
         <select
           onChange={(e) => setVentilationType(e.target.value as VentilationType)}
           disabled={disabled}
-          className={`block w-full rounded border border-slate-300 shadow-sm focus:ring-sky-500 focus:border-sky-500 sm:text-sm ${
-            disabled ? "cursor-not-allowed opacity-50" : ""
-          }`}
+          className={`block w-full rounded border border-slate-300 shadow-sm focus:ring-sky-500 focus:border-sky-500 sm:text-sm ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
           value={ventilationType ?? "unknown"}
         >
-          <option value="window_ac" disabled>
+          <option value="" disabled>
             -- Ventilation type --
           </option>
-          <option value="window_ac">Window-type AC</option>
-          <option value="split_ac">Split-type AC</option>
-          <option value="central_ac_outdoor_air">
-            Central AC with outdoor-air supply
-          </option>
-          <option value="natural">Natural ventilation</option>
-          <option value="mechanical">Mechanical ventilation</option>
-          <option value="unknown">Unknown</option>
+          {options.map(({ value, label }) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
         </select>
         {errors.length > 0 && (
           <p className="mt-1 text-xs text-red-600">{errors[0]}</p>
@@ -100,9 +104,7 @@ export function VentilationFields({
         <select
           onChange={(e) => setOccupancyDurationHours(Number(e.target.value))}
           disabled={disabled}
-          className={`block w-full rounded border border-slate-300 shadow-sm focus:ring-sky-500 focus:border-sky-500 sm:text-sm ${
-            disabled ? "cursor-not-allowed opacity-50" : ""
-          }`}
+          className={`block w-full rounded border border-slate-300 shadow-sm focus:ring-sky-500 focus:border-sky-500 sm:text-sm ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
           value={occupancyDurationHours !== undefined ? String(occupancyDurationHours) : "2"}
         >
           <option value="1">1 hour</option>

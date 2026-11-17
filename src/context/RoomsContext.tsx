@@ -28,6 +28,7 @@ interface RoomsContextValue {
   toggleOnline: (id: string) => void;
   removeRoom: (id: string) => Promise<void>;
   addRoom: (form: RoomForm) => Promise<{ error: string | null }>;
+  updateRoom: (id: string, form: RoomForm) => Promise<{ error: string | null }>;
   toggleSiren: (id: string) => Promise<void>;
   muteAll: (muted: boolean) => Promise<void>;
 }
@@ -120,10 +121,10 @@ function roomToInsertRow(form: RoomForm) {
     length: Number(form.length ?? 6),
     width: Number(form.width ?? 4),
     height: Number(form.height ?? 3),
-    // Ventilation configuration defaults (camelCase from Room type)
-    ventilationType: form.ventilationType ?? "unknown",
-    ventilationAch: form.ventilationAch ?? null,
-    occupancyDurationHours: form.occupancyDurationHours ?? 2,
+    // Ventilation configuration defaults (snake_case for DB columns)
+    ventilation_type: form.ventilationType ?? "unknown",
+    ventilation_ach: form.ventilationAch ?? null,
+    occupancy_duration_h: form.occupancyDurationHours ?? 2,
     // co2 / lpg are intentionally absent. They are not sensor measurements, and
     // writing a default here is what previously caused a newly registered
     // device to display a fabricated "400 ppm CO2 / 0 ppm LPG".
@@ -764,6 +765,70 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
     return { error: null };
   }, []);
 
+  // Update a room's ventilation configuration.
+  // Maps camelCase form fields to snake_case DB columns, only when defined.
+  const updateRoom = useCallback(async (id: string, form: RoomForm) => {
+    const updateData: {
+      ventilation_type?: string;
+      ventilation_ach?: number | null;
+      occupancy_duration_h?: number | null;
+    } = {};
+
+    if (form.ventilationType !== undefined) {
+      updateData.ventilation_type = form.ventilationType;
+    }
+    if (form.ventilationAch !== undefined) {
+      updateData.ventilation_ach = form.ventilationAch;
+    }
+    if (form.occupancyDurationHours !== undefined) {
+      updateData.occupancy_duration_h = form.occupancyDurationHours;
+    }
+
+    // Optimistic local update first.
+    setRooms((prev) =>
+      prev.map((r) =>
+        r.id === id
+          ? {
+              ...r,
+              ventilationType:
+                updateData.ventilation_type ?? r.ventilationType,
+              ventilationAch:
+                updateData.ventilation_ach ?? r.ventilationAch,
+              occupancyDurationHours:
+                updateData.occupancy_duration_h ?? r.occupancyDurationHours,
+            }
+          : r
+      )
+    );
+
+    const { error } = await supabase
+      .from("rooms")
+      .update(updateData)
+      .eq("id", id);
+
+    if (error) {
+      console.error("Failed to update room ventilation:", error.message);
+      // Roll back the optimistic local update.
+      setRooms((prev) =>
+        prev.map((r) =>
+          r.id === id
+            ? {
+                ...r,
+                ventilationType:
+                  form.ventilationType ?? r.ventilationType,
+                ventilationAch:
+                  form.ventilationAch ?? r.ventilationAch,
+                occupancyDurationHours:
+                  form.occupancyDurationHours ?? r.occupancyDurationHours,
+              }
+            : r
+        )
+      );
+      return { error: error.message };
+    }
+    return { error: null };
+  }, []);
+
   // Flip a single device's siren_muted flag. Writes to Supabase first so the
   // ESP32 picks it up on its next poll; the local optimistic update makes the
   // UI feel instant, and the realtime subscription above will reconcile it
@@ -824,6 +889,7 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
         toggleOnline,
         removeRoom,
         addRoom,
+        updateRoom,
         toggleSiren,
         muteAll,
       }}

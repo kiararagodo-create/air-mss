@@ -793,13 +793,15 @@ export function RoomsProvider({ children }: { children: ReactNode }) {
               ventilationType:
                 updateData.ventilation_type ?? r.ventilationType,
               ventilationAch:
-                updateData.ventilation_ach ?? r.ventilationAch,
+                form.ventilationAch !== undefined
+                  ? form.ventilationAch ?? undefined
+                  : r.ventilationAch,
               occupancyDurationHours:
                 updateData.occupancy_duration_h ?? r.occupancyDurationHours,
             }
           : r
-      )
-    );
+        )
+      );
 
     const { error } = await supabase
       .from("rooms")

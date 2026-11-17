@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { type VentilationType, ventilationTypeLabels } from "../lib/ventilationConfig";
 import { getVolumeText } from "../lib/ventilationConfig";
 import { roomVolumeM3 } from "../lib/co2Occupancy";
@@ -30,13 +29,8 @@ export function VentilationFields({
   errors,
   disabled,
 }: VentilationFieldsProps) {
-  const [volumeVisible, setVolumeVisible] = useState(false);
-
-  const volume = length !== undefined && width !== undefined && height !== undefined ? roomVolumeM3(length, width, height) : undefined;
-
-  if (volume !== undefined) {
-    setVolumeVisible(true);
-  }
+  const validDim = (n: number | undefined): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
+  const volume = validDim(length) && validDim(width) && validDim(height) ? roomVolumeM3(length, width, height) : undefined;
 
   const options = [
     { value: "window_ac" as VentilationType, label: ventilationTypeLabels.window_ac },
@@ -117,7 +111,7 @@ export function VentilationFields({
       </div>
 
       {/* Room volume helper (shown when dimensions are valid) */}
-      {volumeVisible && (
+      {volume !== undefined && (
         <div className="mt-2 p-3 bg-slate-50 rounded border border-slate-200">
           {getVolumeText(length ?? 6, width ?? 4, height ?? 3, roomVolumeM3)}
         </div>

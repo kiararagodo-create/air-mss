@@ -10,7 +10,6 @@ import {
   ShieldCheck,
   Wifi,
 } from "lucide-react";
-
 import AlertActionBar from "../components/AlertActionBar";
 import { ConnectionPill, LastSeenLine } from "../components/DeviceConnection";
 import { useNotifications } from "../context/NotificationContext";

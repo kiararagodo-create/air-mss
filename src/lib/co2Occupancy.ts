@@ -343,7 +343,7 @@ export function estimateRange(
 
   // At best ACH/G, compute occupant counts at warning (800) and danger (1000) targets
   const V = 90;
-  const warningTarget = 800;
+  const warningTarget = OCCUPANCY_TARGET_COMFORT_PPM;
   const dangerTarget = 1000;
 
   // Occupants that would push CO2 above warning/danger at best ACH/G
@@ -362,6 +362,10 @@ export function estimateRange(
     dangerCount,
   };
 }
+
+/** Occupancy planning targets (from co2Occupancy.ts, NOT alert thresholds). */
+export const OCCUPANCY_TARGET_COMFORT_PPM = 800;
+export const OCCUPANCY_TARGET_LIMIT_PPM = 1000;
 
 /** Scenario table: evaluate a list of ACH values hypothetically. */
 export interface ScenarioRow {
@@ -385,7 +389,7 @@ export function scenarioTable(achList: number[] | null): ScenarioRow[] {
     // Steady-state CO2 for N=1 at this ACH, V=90, Cout=420, G=0.018
     const ssCoc = 420 + (1 * 0.018 * 1e6) / (90 * ach);
     // Occupants needed for 800 ppm steady state
-    const nFor800 = ((800 - 420) * 90 * ach) / (0.018 * 1e6);
+    const nFor800 = ((OCCUPANCY_TARGET_COMFORT_PPM - 420) * 90 * ach) / (0.018 * 1e6);
     return {
       ach,
       status: "hypothetical",

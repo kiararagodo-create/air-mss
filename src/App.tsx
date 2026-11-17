@@ -27,7 +27,7 @@ function DashboardRoute() {
 }
 
 function DevicesRoute() {
-  const { rooms, removeRoom, addRoom, thresholds, toggleSiren, muteAll } = useRooms();
+  const { rooms, removeRoom, addRoom, updateRoom, thresholds, toggleSiren, muteAll } = useRooms();
   const { user: authUser, role } = useAuth();
   const user = { id: authUser?.id ?? "", role: role ?? "", email: authUser?.email };
   return (
@@ -35,6 +35,7 @@ function DevicesRoute() {
       rooms={rooms}
       removeRoom={removeRoom}
       addRoom={addRoom}
+      updateRoom={updateRoom}
       user={user}
       thresholds={thresholds}
       toggleSiren={toggleSiren}

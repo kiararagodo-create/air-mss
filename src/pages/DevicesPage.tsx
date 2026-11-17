@@ -16,6 +16,7 @@ import { VentilationType } from "../lib/ventilationConfig";
 import { ConnectionPill, LastSeenLine } from "../components/DeviceConnection";
 import { Badge, badgeStyles } from "../ui";
 import { VentilationFields } from "../components/VentilationFields";
+import { OccupancyEstimatorCard } from "../components/OccupancyEstimatorCard";
 import { validateVentilationConfig } from "../lib/ventilationConfig";
 
 type User = {
@@ -25,7 +26,7 @@ type User = {
   email?: string;
 };
 
-type RoomForm = Partial<Room> & { submitLabel?: string };
+type RoomForm = Partial<Room> & { submitLabel?: string; ventilationErrors: string[] };
 
 // Edit these lists to add/remove dropdown options
 const FLOOR_OPTIONS = ["Ground Floor", "2nd Floor", "3rd Floor",];
@@ -396,6 +397,7 @@ interface DevicesPageProps {
   rooms: Room[];
   removeRoom: (id: string) => void;
   addRoom: (form: RoomForm) => Promise<{ error: string | null }>;
+  updateRoom: (id: string, form: RoomForm) => Promise<{ error: string | null }>;
   user: User;
   thresholds: Thresholds;
   toggleSiren: (id: string) => Promise<void>;
@@ -416,6 +418,46 @@ export default function DevicesPage({
   const [roomToRemove, setRoomToRemove] = useState<Room | null>(null);
   const [closedFloors, setClosedFloors] = useState<Set<string>>(new Set());
   const [openRoomId, setOpenRoomId] = useState<string | null>(null);
+  const [editRoomId, setEditRoomId] = useState<string | null>(null);
+  const [_editForm, setEditForm] = useState<RoomForm>({
+    id: "",
+    name: "",
+    floor: FLOOR_OPTIONS[0],
+    length: 6,
+    width: 4,
+    height: 3,
+    co2Sensor: CO2_SENSOR_OPTIONS[0],
+    gasSensor: GAS_SENSOR_OPTIONS[0],
+    tempHumiditySensor: TEMP_HUMIDITY_SENSOR_OPTIONS[0],
+    ventilationType: "unknown" as VentilationType,
+    ventilationAch: undefined as number | undefined,
+    occupancyDurationHours: 2 as number,
+    ventilationErrors: [],
+  });
+
+  // Reload the form only when a different room is chosen. Do NOT depend on
+  // `rooms` or `editForm`, or live readings and typing would reset the form.
+  useEffect(() => {
+    if (!editRoomId) return;
+    const room = rooms.find((r) => r.id === editRoomId);
+    if (!room) return;
+    setEditForm({
+      id: room.id,
+      name: room.name,
+      floor: room.floor ?? FLOOR_OPTIONS[0],
+      length: room.length,
+      width: room.width,
+      height: room.height,
+      co2Sensor: room.co2Sensor,
+      gasSensor: room.gasSensor,
+      tempHumiditySensor: room.tempHumiditySensor ?? "",
+      ventilationType: room.ventilationType as VentilationType | undefined,
+      ventilationAch: room.ventilationAch as number | null | undefined,
+      occupancyDurationHours: room.occupancyDurationHours as number | undefined,
+      ventilationErrors: [],
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRoomId]);
   const canManage = user.role === "admin";
 
   const allMuted = rooms.length > 0 && rooms.every((r) => r.sirenMuted);
@@ -672,6 +714,44 @@ export default function DevicesPage({
               alerts are unaffected.
             </span>
           </div>
+          <div style={{ marginTop: 12 }}>
+            <span style={{ fontSize: 11, color: "#64748b", fontWeight: 700 }}>Room</span>
+            <select
+              value={editRoomId ?? ""}
+              onChange={(event) => {
+                const roomId = event.target.value;
+                setEditRoomId(roomId || null);
+                const room = rooms.find((r) => r.id === roomId);
+                if (room) {
+                  setEditForm({
+                    id: room.id,
+                    name: room.name,
+                    floor: room.floor ?? FLOOR_OPTIONS[0],
+                    length: room.length,
+                    width: room.width,
+                    height: room.height,
+                    co2Sensor: room.co2Sensor,
+                    gasSensor: room.gasSensor,
+                    tempHumiditySensor: room.tempHumiditySensor ?? "",
+                    ventilationType: room.ventilationType as VentilationType | undefined,
+                    ventilationAch: room.ventilationAch as number | null | undefined,
+                    occupancyDurationHours: room.occupancyDurationHours as number | undefined,
+                    ventilationErrors: [],
+                  });
+                }
+              }}
+              style={{ ...selectStyle, marginBottom: 8 }}
+            >
+              <option value="">Select a room</option>
+              {rooms
+                .filter((r) => r.id !== undefined)
+                .map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.floor ? `${r.name} (${r.floor})` : r.name}
+                  </option>
+                ))}
+            </select>
+          </div>
           <button
             onClick={() => muteAll(!allMuted)}
             type="button"
@@ -861,11 +941,35 @@ export default function DevicesPage({
                                   </div>
                                 </div>
                               </div>
+                              <div style={{ gridColumn: "1 / -1" }}>
+                                <OccupancyEstimatorCard room={room} />
+                              </div>
 
                               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                                 {/* Same indicator as the header; the age of the
                                     signal itself lives under the room name. */}
                                 <ConnectionPill lastReadingAt={rowLastSeen} />
+                                <button
+                                  onClick={() => canManage && setEditRoomId(room.id)}
+                                  disabled={!canManage}
+                                  type="button"
+                                  style={{
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    border: "1px solid #bae6fd",
+                                    background: "#fff",
+                                    color: "#0369a1",
+                                    borderRadius: 6,
+                                    padding: "6px 10px",
+                                    cursor: canManage ? "pointer" : "not-allowed",
+                                    opacity: canManage ? 1 : 0.5,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                  }}
+                                >
+                                  Edit
+                                </button>
                                 <button
                                   onClick={() => canManage && toggleSiren(room.id)}
                                   disabled={!canManage}
